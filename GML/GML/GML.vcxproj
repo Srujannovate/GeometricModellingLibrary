@@ -77,11 +77,16 @@
       <PreprocessorDefinitions>WIN32;_DEBUG;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\\GML_Library\\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
+    <PostBuildEvent>
+      <Command>if exist "$(ProjectDir)..\GML_Library\$(Platform)\$(Configuration)\GML_Library.dll" copy /Y "$(ProjectDir)..\GML_Library\$(Platform)\$(Configuration)\GML_Library.dll" "$(OutDir)"
+if exist "$(ProjectDir)..\GML_Library\$(Platform)\$(Configuration)\GML_Library.pdb" copy /Y "$(ProjectDir)..\GML_Library\$(Platform)\$(Configuration)\GML_Library.pdb" "$(OutDir)"</Command>
+    </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <ClCompile>
@@ -92,11 +97,16 @@
       <PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\\GML_Library;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
+    <PostBuildEvent>
+      <Command>if exist "$(ProjectDir)..\GML_Library\$(Platform)\$(Configuration)\GML_Library.dll" copy /Y "$(ProjectDir)..\GML_Library\$(Platform)\$(Configuration)\GML_Library.dll" "$(OutDir)"
+if exist "$(ProjectDir)..\GML_Library\$(Platform)\$(Configuration)\GML_Library.pdb" copy /Y "$(ProjectDir)..\GML_Library\$(Platform)\$(Configuration)\GML_Library.pdb" "$(OutDir)"</Command>
+    </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
@@ -105,11 +115,16 @@
       <PreprocessorDefinitions>_DEBUG;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\\GML_Library;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
+    <PostBuildEvent>
+      <Command>if exist "$(ProjectDir)..\GML_Library\$(Platform)\$(Configuration)\GML_Library.dll" copy /Y "$(ProjectDir)..\GML_Library\$(Platform)\$(Configuration)\GML_Library.dll" "$(OutDir)"
+if exist "$(ProjectDir)..\GML_Library\$(Platform)\$(Configuration)\GML_Library.pdb" copy /Y "$(ProjectDir)..\GML_Library\$(Platform)\$(Configuration)\GML_Library.pdb" "$(OutDir)"</Command>
+    </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
@@ -120,11 +135,16 @@
       <PreprocessorDefinitions>NDEBUG;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\\GML_Library;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
+    <PostBuildEvent>
+      <Command>if exist "$(ProjectDir)..\GML_Library\$(Platform)\$(Configuration)\GML_Library.dll" copy /Y "$(ProjectDir)..\GML_Library\$(Platform)\$(Configuration)\GML_Library.dll" "$(OutDir)"
+if exist "$(ProjectDir)..\GML_Library\$(Platform)\$(Configuration)\GML_Library.pdb" copy /Y "$(ProjectDir)..\GML_Library\$(Platform)\$(Configuration)\GML_Library.pdb" "$(OutDir)"</Command>
+    </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="framework.h" />
@@ -145,6 +165,7 @@
   <ItemGroup>
     <ProjectReference Include="..\\GML_Library\\GML_Library.vcxproj">
       <Project>{e47e5bcd-f297-4c22-a6b6-5519be8f9003}</Project>
+      <LinkLibraryDependencies>true</LinkLibraryDependencies>
     </ProjectReference>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
