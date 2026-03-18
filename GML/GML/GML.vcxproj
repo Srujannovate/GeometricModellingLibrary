@@ -82,6 +82,7 @@
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalLibraryDirectories>$(ProjectDir)..\\GML_Library\\$(Platform)\\$(Configuration);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
     <PostBuildEvent>
       <Command>if exist "$(ProjectDir)..\GML_Library\$(Platform)\$(Configuration)\GML_Library.dll" copy /Y "$(ProjectDir)..\GML_Library\$(Platform)\$(Configuration)\GML_Library.dll" "$(OutDir)"
@@ -97,11 +98,12 @@ if exist "$(ProjectDir)..\GML_Library\$(Platform)\$(Configuration)\GML_Library.p
       <PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(ProjectDir)..\\GML_Library;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\\GML_Library\\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalLibraryDirectories>$(ProjectDir)..\\GML_Library\\$(Platform)\\$(Configuration);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
     <PostBuildEvent>
       <Command>if exist "$(ProjectDir)..\GML_Library\$(Platform)\$(Configuration)\GML_Library.dll" copy /Y "$(ProjectDir)..\GML_Library\$(Platform)\$(Configuration)\GML_Library.dll" "$(OutDir)"
@@ -115,11 +117,12 @@ if exist "$(ProjectDir)..\GML_Library\$(Platform)\$(Configuration)\GML_Library.p
       <PreprocessorDefinitions>_DEBUG;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(ProjectDir)..\\GML_Library;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\\GML_Library\\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalLibraryDirectories>$(ProjectDir)..\\GML_Library\\$(Platform)\\$(Configuration);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
     <PostBuildEvent>
       <Command>if exist "$(ProjectDir)..\GML_Library\$(Platform)\$(Configuration)\GML_Library.dll" copy /Y "$(ProjectDir)..\GML_Library\$(Platform)\$(Configuration)\GML_Library.dll" "$(OutDir)"
@@ -135,11 +138,12 @@ if exist "$(ProjectDir)..\GML_Library\$(Platform)\$(Configuration)\GML_Library.p
       <PreprocessorDefinitions>NDEBUG;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(ProjectDir)..\\GML_Library;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\\GML_Library\\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalLibraryDirectories>$(ProjectDir)..\\GML_Library\\$(Platform)\\$(Configuration);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
     <PostBuildEvent>
       <Command>if exist "$(ProjectDir)..\GML_Library\$(Platform)\$(Configuration)\GML_Library.dll" copy /Y "$(ProjectDir)..\GML_Library\$(Platform)\$(Configuration)\GML_Library.dll" "$(OutDir)"
