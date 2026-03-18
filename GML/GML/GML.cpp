@@ -3,6 +3,7 @@
 
 #include "framework.h"
 #include "GML.h"
+#include "GMLLibrary.h"
 
 #define MAX_LOADSTRING 100
 
@@ -16,6 +17,7 @@ ATOM                MyRegisterClass(HINSTANCE hInstance);
 BOOL                InitInstance(HINSTANCE, int);
 LRESULT CALLBACK    WndProc(HWND, UINT, WPARAM, LPARAM);
 INT_PTR CALLBACK    About(HWND, UINT, WPARAM, LPARAM);
+INT_PTR CALLBACK    AddNumbersDlgProc(HWND, UINT, WPARAM, LPARAM);
 
 int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
                      _In_opt_ HINSTANCE hPrevInstance,
@@ -134,6 +136,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             case IDM_ABOUT:
                 DialogBox(hInst, MAKEINTRESOURCE(IDD_ABOUTBOX), hWnd, About);
                 break;
+            case IDM_ADDNUM:
+                DialogBox(hInst, MAKEINTRESOURCE(IDD_ADDNUM), hWnd, AddNumbersDlgProc);
+                break;
             case IDM_EXIT:
                 DestroyWindow(hWnd);
                 break;
@@ -172,6 +177,41 @@ INT_PTR CALLBACK About(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
         if (LOWORD(wParam) == IDOK || LOWORD(wParam) == IDCANCEL)
         {
             EndDialog(hDlg, LOWORD(wParam));
+            return (INT_PTR)TRUE;
+        }
+        break;
+    }
+    return (INT_PTR)FALSE;
+}
+
+// Add Numbers dialog procedure
+INT_PTR CALLBACK AddNumbersDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
+{
+    UNREFERENCED_PARAMETER(lParam);
+    switch (message)
+    {
+    case WM_INITDIALOG:
+        return (INT_PTR)TRUE;
+    case WM_COMMAND:
+        switch (LOWORD(wParam))
+        {
+        case IDOK:
+        {
+            wchar_t bufA[64] = {0}, bufB[64] = {0};
+            GetDlgItemTextW(hDlg, IDC_EDIT_A, bufA, 63);
+            GetDlgItemTextW(hDlg, IDC_EDIT_B, bufB, 63);
+            wchar_t* endA = nullptr; wchar_t* endB = nullptr;
+            long a = wcstol(bufA, &endA, 10);
+            long b = wcstol(bufB, &endB, 10);
+            int sum = GML_Add((int)a, (int)b);
+            wchar_t out[128];
+            swprintf_s(out, L"%ld + %ld = %d", a, b, sum);
+            MessageBoxW(GetParent(hDlg), out, L"Sum", MB_OK | MB_ICONINFORMATION);
+            EndDialog(hDlg, IDOK);
+            return (INT_PTR)TRUE;
+        }
+        case IDCANCEL:
+            EndDialog(hDlg, IDCANCEL);
             return (INT_PTR)TRUE;
         }
         break;
