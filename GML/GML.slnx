@@ -4,4 +4,5 @@
     <Platform Name="x86" />
   </Configurations>
   <Project Path="GML/GML.vcxproj" Id="e5588b02-3ba0-4698-9365-50162e0ca2fc" />
+  <Project Path="GML_Library/GML_Library.vcxproj" Id="e47e5bcd-f297-4c22-a6b6-5519be8f9003" />
 </Solution>
