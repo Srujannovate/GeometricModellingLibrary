@@ -1,0 +1,7 @@
+<Solution>
+  <Configurations>
+    <Platform Name="x64" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Project Path="GML/GML.vcxproj" Id="e5588b02-3ba0-4698-9365-50162e0ca2fc" />
+</Solution>
