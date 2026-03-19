@@ -14,9 +14,9 @@
 #define IDR_MAINFRAME                   128
 #define IDD_ADDNUM                      129
 #define IDC_STATIC                      -1
-#define IDM_ADDNUM      32771
-#define IDC_EDIT_A      1001
-#define IDC_EDIT_B      1002
+#define IDM_ADDNUM                      32771
+#define IDC_EDIT_A                      1001
+#define IDC_EDIT_B                      1002
 
 // Next default values for new objects
 // 
