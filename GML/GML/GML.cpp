@@ -4,6 +4,15 @@
 #include "framework.h"
 #include "GML.h"
 #include "GMLLibrary.h"
+#include <vector>
+#include <string>
+#include <sstream>
+#include <fstream>
+#include <filesystem>
+#include <iomanip>
+#include <optional>
+#include <commdlg.h>
+#pragma comment(lib, "Comdlg32.lib")
 
 #define MAX_LOADSTRING 100
 
@@ -18,6 +27,17 @@ BOOL                InitInstance(HINSTANCE, int);
 LRESULT CALLBACK    WndProc(HWND, UINT, WPARAM, LPARAM);
 INT_PTR CALLBACK    About(HWND, UINT, WPARAM, LPARAM);
 INT_PTR CALLBACK    AddNumbersDlgProc(HWND, UINT, WPARAM, LPARAM);
+
+// OBJ geometry storage and helpers
+struct Point3 { double x = 0, y = 0, z = 0; };
+static std::vector<Point3> g_points;            // loaded 3D points
+static std::wstring g_summary;                  // text rendered in the main window
+
+static void UpdateSummaryText();
+static bool LoadOBJPoints(const std::filesystem::path& path,
+                          std::vector<Point3>& out,
+                          std::wstring& error);
+static std::optional<std::filesystem::path> ShowOpenObjDialog(HWND owner);
 
 int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
                      _In_opt_ HINSTANCE hPrevInstance,
@@ -107,6 +127,13 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
       return FALSE;
    }
 
+   // Insert a "Load OBJ..." menu item at runtime to avoid editing resources.
+   if (HMENU hMenu = GetMenu(hWnd))
+   {
+       AppendMenuW(hMenu, MF_STRING, IDM_LOADOBJ, L"&Load OBJ...");
+       DrawMenuBar(hWnd);
+   }
+
    ShowWindow(hWnd, nCmdShow);
    UpdateWindow(hWnd);
 
@@ -139,6 +166,26 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             case IDM_ADDNUM:
                 DialogBox(hInst, MAKEINTRESOURCE(IDD_ADDNUM), hWnd, AddNumbersDlgProc);
                 break;
+            case IDM_LOADOBJ:
+            {
+                auto sel = ShowOpenObjDialog(hWnd);
+                if (sel)
+                {
+                    std::wstring error;
+                    std::vector<Point3> tmp;
+                    if (LoadOBJPoints(*sel, tmp, error))
+                    {
+                        g_points = std::move(tmp);
+                        UpdateSummaryText();
+                        InvalidateRect(hWnd, nullptr, TRUE);
+                    }
+                    else
+                    {
+                        MessageBoxW(hWnd, error.c_str(), L"Failed to load OBJ", MB_OK | MB_ICONERROR);
+                    }
+                }
+            }
+                break;
             case IDM_EXIT:
                 DestroyWindow(hWnd);
                 break;
@@ -151,7 +198,14 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         {
             PAINTSTRUCT ps;
             HDC hdc = BeginPaint(hWnd, &ps);
-            // TODO: Add any drawing code that uses hdc here...
+            // Render summary text with the loaded point count and coordinates.
+            RECT rc{};
+            GetClientRect(hWnd, &rc);
+            DrawTextW(hdc,
+                      g_summary.c_str(),
+                      static_cast<int>(g_summary.size()),
+                      &rc,
+                      DT_LEFT | DT_TOP | DT_NOPREFIX | DT_WORDBREAK);
             EndPaint(hWnd, &ps);
         }
         break;
@@ -217,4 +271,78 @@ INT_PTR CALLBACK AddNumbersDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARA
         break;
     }
     return (INT_PTR)FALSE;
+}
+
+// Build a printable summary of the loaded points.
+static void UpdateSummaryText()
+{
+    std::wostringstream oss;
+    oss.setf(std::ios::fixed, std::ios::floatfield);
+    oss << L"Points loaded: " << g_points.size() << L"\r\n";
+    oss << L"Format: index: x y z\r\n\r\n";
+    oss << std::setprecision(6);
+    for (size_t i = 0; i < g_points.size(); ++i)
+    {
+        const auto& p = g_points[i];
+        oss << i << L": " << p.x << L"\t" << p.y << L"\t" << p.z << L"\r\n";
+    }
+    g_summary = oss.str();
+}
+
+// Show a file-open dialog filtered to .obj files.
+static std::optional<std::filesystem::path> ShowOpenObjDialog(HWND owner)
+{
+    wchar_t fileBuf[MAX_PATH] = {0};
+    OPENFILENAMEW ofn{};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = owner;
+    ofn.lpstrFilter = L"Wavefront OBJ (*.obj)\0*.obj\0All Files (*.*)\0*.*\0\0";
+    ofn.lpstrFile = fileBuf;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_EXPLORER;
+    ofn.lpstrTitle = L"Select an OBJ file";
+    if (GetOpenFileNameW(&ofn))
+    {
+        return std::filesystem::path{fileBuf};
+    }
+    return std::nullopt;
+}
+
+// Minimal OBJ parser: collects lines that start with "v " as 3D points.
+static bool LoadOBJPoints(const std::filesystem::path& path,
+                          std::vector<Point3>& out,
+                          std::wstring& error)
+{
+    out.clear();
+    std::ifstream in(path, std::ios::in);
+    if (!in.is_open())
+    {
+        error = L"Could not open file: " + path.wstring();
+        return false;
+    }
+    std::string line;
+    while (std::getline(in, line))
+    {
+        // Skip leading spaces
+        size_t i = 0;
+        while (i < line.size() && (line[i] == ' ' || line[i] == '\t')) ++i;
+        if (i >= line.size()) continue;
+        if (line[i] != 'v') continue; // only vertex positions
+        ++i;
+        if (i < line.size() && (line[i] == 'n' || line[i] == 't')) continue; // skip vn/vt
+        if (i < line.size() && !(line[i] == ' ' || line[i] == '\t')) continue; // require whitespace after 'v'
+        // Parse x y z (ignore optional w)
+        double x = 0, y = 0, z = 0;
+        std::istringstream iss(line.substr(i));
+        if (iss >> x >> y >> z)
+        {
+            out.push_back(Point3{x, y, z});
+        }
+    }
+    if (out.empty())
+    {
+        error = L"No vertex positions (v) found in file.";
+        return false;
+    }
+    return true;
 }
