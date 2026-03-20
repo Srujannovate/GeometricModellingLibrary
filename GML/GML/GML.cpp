@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <iomanip>
 #include <optional>
+#include <chrono>
 #include <commdlg.h>
 #pragma comment(lib, "Comdlg32.lib")
 
@@ -205,7 +206,10 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                 if (!PromptDouble(hWnd, L"Nearest Point", L"Enter Y:", y)) break;
                 if (!PromptDouble(hWnd, L"Nearest Point", L"Enter Z:", z)) break;
                 gml::KDTree3d::Point q{ x, y, z };
+                auto t0 = std::chrono::steady_clock::now();
                 auto res = g_kdtree.nearest(q);
+                auto t1 = std::chrono::steady_clock::now();
+                const auto us = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
                 if (!res) {
                     MessageBoxW(hWnd, L"KDTree query failed (no data).", L"KDTree", MB_OK | MB_ICONWARNING);
                     break;
@@ -218,7 +222,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                 oss << std::setprecision(6)
                     << L"Query: (" << x << L", " << y << L", " << z << L")\r\n"
                     << L"Nearest index: " << idx << L" at (" << it.point[0] << L", " << it.point[1] << L", " << it.point[2] << L")\r\n"
-                    << L"Distance: " << dist;
+                    << L"Distance: " << dist << L"\r\n"
+                    << L"Compute time: " << us << L" microseconds";
                 MessageBoxW(hWnd, oss.str().c_str(), L"Nearest Point Result", MB_OK | MB_ICONINFORMATION);
                 // Prepend to summary and repaint
                 g_summary = oss.str() + L"\r\n\r\n" + g_summary;
