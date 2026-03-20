@@ -46,7 +46,12 @@ public:
     std::vector<Item> radiusSearch(const Point& query, double r) const;
 
 private:
-    struct Node;
+    struct Node {
+        Item item{};
+        std::size_t axis = 0; // splitting axis for this node
+        Node* left = nullptr;
+        Node* right = nullptr;
+    };
 
     // Storage for all nodes so their addresses remain stable and are cleaned up automatically
     std::vector<Node> nodes_;
@@ -66,7 +71,13 @@ private:
 };
 
 // Explicit instantiation provided by the library for common usage:
+#if !defined(GMLLIBRARY_EXPORTS)
+// When consuming from the app, import the symbols from the DLL
+extern template class __declspec(dllimport) KDTree<3, double>;
+#else
+// When building the DLL, the explicit instantiation in KDTree.cpp exports the symbols
 extern template class KDTree<3, double>;
+#endif
 using KDTree3d = KDTree<3, double>;
 
 } // namespace gml

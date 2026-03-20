@@ -4,6 +4,7 @@
 #include "framework.h"
 #include "GML.h"
 #include "GMLLibrary.h"
+#include "KDTree.h"
 #include <vector>
 #include <string>
 #include <sstream>
@@ -32,12 +33,17 @@ INT_PTR CALLBACK    AddNumbersDlgProc(HWND, UINT, WPARAM, LPARAM);
 struct Point3 { double x = 0, y = 0, z = 0; };
 static std::vector<Point3> g_points;            // loaded 3D points
 static std::wstring g_summary;                  // text rendered in the main window
+static gml::KDTree3d g_kdtree;                  // KD-tree built from g_points
 
 static void UpdateSummaryText();
+static void BuildKDTreeFromPoints();
 static bool LoadOBJPoints(const std::filesystem::path& path,
                           std::vector<Point3>& out,
                           std::wstring& error);
 static std::optional<std::filesystem::path> ShowOpenObjDialog(HWND owner);
+
+// Simple single-input modal dialog (built at runtime) to capture a double value.
+static bool PromptDouble(HWND owner, const wchar_t* title, const wchar_t* prompt, double& out);
 
 int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
                      _In_opt_ HINSTANCE hPrevInstance,
@@ -131,6 +137,7 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
    if (HMENU hMenu = GetMenu(hWnd))
    {
        AppendMenuW(hMenu, MF_STRING, IDM_LOADOBJ, L"&Load OBJ...");
+       AppendMenuW(hMenu, MF_STRING, IDM_FINDNEAREST, L"&Find Nearest Point...");
        DrawMenuBar(hWnd);
    }
 
@@ -176,6 +183,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                     if (LoadOBJPoints(*sel, tmp, error))
                     {
                         g_points = std::move(tmp);
+                        BuildKDTreeFromPoints();
                         UpdateSummaryText();
                         InvalidateRect(hWnd, nullptr, TRUE);
                     }
@@ -184,6 +192,37 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                         MessageBoxW(hWnd, error.c_str(), L"Failed to load OBJ", MB_OK | MB_ICONERROR);
                     }
                 }
+            }
+                break;
+            case IDM_FINDNEAREST:
+            {
+                if (g_kdtree.empty()) {
+                    MessageBoxW(hWnd, L"No points loaded. Use 'Load OBJ...' first.", L"KDTree", MB_OK | MB_ICONINFORMATION);
+                    break;
+                }
+                double x=0,y=0,z=0;
+                if (!PromptDouble(hWnd, L"Nearest Point", L"Enter X:", x)) break;
+                if (!PromptDouble(hWnd, L"Nearest Point", L"Enter Y:", y)) break;
+                if (!PromptDouble(hWnd, L"Nearest Point", L"Enter Z:", z)) break;
+                gml::KDTree3d::Point q{ x, y, z };
+                auto res = g_kdtree.nearest(q);
+                if (!res) {
+                    MessageBoxW(hWnd, L"KDTree query failed (no data).", L"KDTree", MB_OK | MB_ICONWARNING);
+                    break;
+                }
+                const auto& it = res->item;
+                const double dist = res->distance;
+                int idx = static_cast<int>(std::llround(it.value));
+                std::wostringstream oss;
+                oss.setf(std::ios::fixed, std::ios::floatfield);
+                oss << std::setprecision(6)
+                    << L"Query: (" << x << L", " << y << L", " << z << L")\r\n"
+                    << L"Nearest index: " << idx << L" at (" << it.point[0] << L", " << it.point[1] << L", " << it.point[2] << L")\r\n"
+                    << L"Distance: " << dist;
+                MessageBoxW(hWnd, oss.str().c_str(), L"Nearest Point Result", MB_OK | MB_ICONINFORMATION);
+                // Prepend to summary and repaint
+                g_summary = oss.str() + L"\r\n\r\n" + g_summary;
+                InvalidateRect(hWnd, nullptr, TRUE);
             }
                 break;
             case IDM_EXIT:
@@ -289,6 +328,19 @@ static void UpdateSummaryText()
     g_summary = oss.str();
 }
 
+// Build KDTree from current g_points.
+static void BuildKDTreeFromPoints()
+{
+    std::vector<gml::KDTree3d::Item> items;
+    items.reserve(g_points.size());
+    for (size_t i = 0; i < g_points.size(); ++i)
+    {
+        gml::KDTree3d::Point pt{ g_points[i].x, g_points[i].y, g_points[i].z };
+        items.push_back(gml::KDTree3d::Item{ pt, static_cast<double>(i) });
+    }
+    g_kdtree.build(std::move(items));
+}
+
 // Show a file-open dialog filtered to .obj files.
 static std::optional<std::filesystem::path> ShowOpenObjDialog(HWND owner)
 {
@@ -345,4 +397,136 @@ static bool LoadOBJPoints(const std::filesystem::path& path,
         return false;
     }
     return true;
+}
+
+// ---------- Runtime single-input dialog implementation ----------
+namespace {
+#pragma pack(push, 1)
+struct DLGTEMPLATE_WRITER {
+    HGLOBAL hgl = nullptr;
+    BYTE* base = nullptr;
+    BYTE* p = nullptr;
+    bool init(size_t bytes) {
+        hgl = GlobalAlloc(GMEM_ZEROINIT, bytes);
+        if (!hgl) return false;
+        base = (BYTE*)GlobalLock(hgl);
+        p = base;
+        return base != nullptr;
+    }
+    void fini() { if (base) GlobalUnlock(hgl); }
+    void align_dword() { ULONG_PTR n = (ULONG_PTR)p; n = (n + 3) & ~3; p = (BYTE*)n; }
+    template <class T> T* write(const T& v) { T* q = (T*)p; *q = v; p += sizeof(T); return q; }
+    void write_word(WORD v) { write(v); }
+    void write_dword(DWORD v) { write(v); }
+    void write_wstr(const wchar_t* s) { while (*s) { write_word((WORD)*s++); } write_word(0); }
+};
+#pragma pack(pop)
+}
+
+#define IDC_IN_TEXT  5002
+#define IDC_IN_EDIT  5001
+
+struct InputState { const wchar_t* title; const wchar_t* prompt; wchar_t* buf; int buflen; };
+
+static INT_PTR CALLBACK InputDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    if (msg == WM_INITDIALOG) {
+        auto* st = reinterpret_cast<InputState*>(lParam);
+        SetWindowLongPtrW(hDlg, GWLP_USERDATA, (LONG_PTR)st);
+        SetWindowTextW(hDlg, st->title ? st->title : L"Input");
+        SetDlgItemTextW(hDlg, IDC_IN_TEXT, st->prompt ? st->prompt : L"Enter value:");
+        SetDlgItemTextW(hDlg, IDC_IN_EDIT, st->buf ? st->buf : L"0");
+        HWND hEdit = GetDlgItem(hDlg, IDC_IN_EDIT);
+        SetFocus(hEdit);
+        return FALSE; // we set focus
+    } else if (msg == WM_COMMAND) {
+        switch (LOWORD(wParam)) {
+        case IDOK: {
+            auto* st = reinterpret_cast<InputState*>(GetWindowLongPtrW(hDlg, GWLP_USERDATA));
+            if (st && st->buf && st->buflen > 0) {
+                GetDlgItemTextW(hDlg, IDC_IN_EDIT, st->buf, st->buflen - 1);
+            }
+            EndDialog(hDlg, IDOK);
+            return TRUE;
+        }
+        case IDCANCEL:
+            EndDialog(hDlg, IDCANCEL);
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+static HGLOBAL BuildSingleInputDialogTemplate()
+{
+    // Create a simple dialog: [Text] [Edit] [OK] [Cancel]
+    DLGTEMPLATE_WRITER w;
+    if (!w.init(1024)) return nullptr;
+
+    auto* dt = w.write<DLGTEMPLATE>({});
+    dt->style = DS_MODALFRAME | DS_SETFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU;
+    dt->cdit = 4; // 4 controls
+    dt->x = 10; dt->y = 10; dt->cx = 200; dt->cy = 60; // dialog units
+    w.write_word(0); // no menu
+    w.write_word(0); // default class
+    w.write_wstr(L"Input"); // title placeholder
+    w.write_word(8); // font size
+    w.write_wstr(L"MS Shell Dlg"); // font face
+
+    // Static text
+    w.align_dword();
+    auto* it = w.write<DLGITEMTEMPLATE>({});
+    it->style = WS_CHILD | WS_VISIBLE | SS_LEFT;
+    it->x = 7; it->y = 7; it->cx = 186; it->cy = 10; it->id = IDC_IN_TEXT;
+    w.write_word(0xFFFF); w.write_word(0x0082); // static class
+    w.write_wstr(L"Enter value:");
+    w.write_word(0); // no creation data
+
+    // Edit control
+    w.align_dword();
+    it = w.write<DLGITEMTEMPLATE>({});
+    it->style = WS_CHILD | WS_VISIBLE | WS_BORDER | ES_LEFT | ES_AUTOHSCROLL;
+    it->x = 7; it->y = 20; it->cx = 186; it->cy = 12; it->id = IDC_IN_EDIT;
+    w.write_word(0xFFFF); w.write_word(0x0081); // edit class
+    w.write_word(0); // empty title
+    w.write_word(0); // no creation data
+
+    // OK button
+    w.align_dword();
+    it = w.write<DLGITEMTEMPLATE>({});
+    it->style = WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON;
+    it->x = 60; it->y = 40; it->cx = 40; it->cy = 14; it->id = IDOK;
+    w.write_word(0xFFFF); w.write_word(0x0080); // button class
+    w.write_wstr(L"OK");
+    w.write_word(0);
+
+    // Cancel button
+    w.align_dword();
+    it = w.write<DLGITEMTEMPLATE>({});
+    it->style = WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON;
+    it->x = 110; it->y = 40; it->cx = 40; it->cy = 14; it->id = IDCANCEL;
+    w.write_word(0xFFFF); w.write_word(0x0080);
+    w.write_wstr(L"Cancel");
+    w.write_word(0);
+
+    w.fini();
+    return w.hgl;
+}
+
+static bool PromptDouble(HWND owner, const wchar_t* title, const wchar_t* prompt, double& out)
+{
+    for (;;) {
+        HGLOBAL hgl = BuildSingleInputDialogTemplate();
+        if (!hgl) return false;
+        wchar_t buf[128] = L"0";
+        InputState st{ title, prompt, buf, (int)_countof(buf) };
+        INT_PTR r = DialogBoxIndirectParamW(hInst, (LPCDLGTEMPLATEW)GlobalLock(hgl), owner, InputDlgProc, (LPARAM)&st);
+        GlobalUnlock(hgl);
+        GlobalFree(hgl);
+        if (r != IDOK) return false;
+        wchar_t* end = nullptr;
+        double v = wcstod(buf, &end);
+        if (end && *end == L'\0') { out = v; return true; }
+        MessageBoxW(owner, L"Please enter a valid number.", L"Invalid input", MB_OK | MB_ICONWARNING);
+    }
 }
