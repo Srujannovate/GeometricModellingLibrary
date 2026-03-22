@@ -62,6 +62,8 @@ struct TransformParams { double tx, ty, tz, yawZ, pitchY, rollX, s; };
 static bool ShowTransformDialog(HWND owner, TransformParams& out);
 struct SphereParams { double cx, cy, cz, r; };
 static bool ShowSphereDialog(HWND owner, SphereParams& out);
+struct PointQueryParams { double x, y, z; };
+static bool ShowPointDialog(HWND owner, PointQueryParams& out);
 
 static void UpdateSummaryText();
 static void BuildKDTreeFromPoints();
@@ -250,11 +252,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                 MessageBoxW(hWnd, L"No points loaded. Use 'Load OBJ...' first.", L"KDTree", MB_OK | MB_ICONINFORMATION);
                 break;
             }
-            double x = 0, y = 0, z = 0;
-            if (!PromptDouble(hWnd, L"Nearest Point", L"Enter X:", x)) break;
-            if (!PromptDouble(hWnd, L"Nearest Point", L"Enter Y:", y)) break;
-            if (!PromptDouble(hWnd, L"Nearest Point", L"Enter Z:", z)) break;
-            Point3 qw{ x, y, z };
+            PointQueryParams pq{ 0,0,0 };
+            if (!ShowPointDialog(hWnd, pq)) break;
+            Point3 qw{ pq.x, pq.y, pq.z };
             Point3 ql = XfApplyPointRowMajor(g_modelXf.inv, qw); // world->model
             gml::KDTree3d::Point q{ ql.x, ql.y, ql.z };
             auto t0 = std::chrono::steady_clock::now();
@@ -271,7 +271,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             std::wostringstream oss;
             oss.setf(std::ios::fixed, std::ios::floatfield);
             oss << std::setprecision(6)
-                << L"Query: (" << x << L", " << y << L", " << z << L")\r\n"
+                << L"Query: (" << pq.x << L", " << pq.y << L", " << pq.z << L")\r\n"
                 << L"Nearest index: " << idx << L" at (" << it.point[0] << L", " << it.point[1] << L", " << it.point[2] << L")\r\n"
                 << L"Distance: " << dist << L"\r\n"
                 << L"Compute time: " << us << L" microseconds";
@@ -281,16 +281,16 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             InvalidateRect(hWnd, nullptr, TRUE);
         }
         break;
-            case IDM_SPHEREMESH:
-            {
-                if (g_kdtree.empty()) {
-                    MessageBoxW(hWnd, L"No mesh loaded. Use 'Load OBJ...' first.", L"Sphere-Mesh", MB_OK | MB_ICONINFORMATION);
-                    break;
-                }
-                SphereParams sp{0,0,0,1};
-                if (!ShowSphereDialog(hWnd, sp)) break;
-                auto t0 = std::chrono::steady_clock::now();
-                const bool hit = SphereIntersectsMeshKDRefined(sp.cx, sp.cy, sp.cz, sp.r);
+        case IDM_SPHEREMESH:
+        {
+            if (g_kdtree.empty()) {
+                MessageBoxW(hWnd, L"No mesh loaded. Use 'Load OBJ...' first.", L"Sphere-Mesh", MB_OK | MB_ICONINFORMATION);
+                break;
+            }
+            SphereParams sp{ 0,0,0,1 };
+            if (!ShowSphereDialog(hWnd, sp)) break;
+            auto t0 = std::chrono::steady_clock::now();
+            const bool hit = SphereIntersectsMeshKDRefined(sp.cx, sp.cy, sp.cz, sp.r);
             auto t1 = std::chrono::steady_clock::now();
             const auto us = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
             std::wostringstream oss;
@@ -302,31 +302,32 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             InvalidateRect(hWnd, nullptr, TRUE);
         }
         break;
-            case IDM_SETTRANSFORM:
-            {
-                TransformParams p{0,0,0,0,0,0,1};
-                if (!ShowTransformDialog(hWnd, p)) break;
-                XfSetTranslationRotationUniformScaleEuler(g_modelXf, p.tx, p.ty, p.tz, p.rollX, p.pitchY, p.yawZ, p.s);
-                UpdateSummaryText();
-                InvalidateRect(hWnd, nullptr, TRUE);
-            }
+        case IDM_SETTRANSFORM:
+        {
+            TransformParams p{ 0,0,0,0,0,0,1 };
+            if (!ShowTransformDialog(hWnd, p)) break;
+            XfSetTranslationRotationUniformScaleEuler(g_modelXf, p.tx, p.ty, p.tz, p.rollX, p.pitchY, p.yawZ, p.s);
+            UpdateSummaryText();
+            InvalidateRect(hWnd, nullptr, TRUE);
+        }
+        break;
+        case IDM_EXPORT_TRANSFORMED:
+        {
+            if (g_points.empty()) {
+                MessageBoxW(hWnd, L"No model loaded. Use Load OBJ first.", L"Export", MB_OK | MB_ICONINFORMATION);
                 break;
-            case IDM_EXPORT_TRANSFORMED:
-            {
-                if (g_points.empty()) {
-                    MessageBoxW(hWnd, L"No model loaded. Use Load OBJ first.", L"Export", MB_OK | MB_ICONINFORMATION);
-                    break;
-                }
-                auto savePath = ShowSaveTxtDialog(hWnd);
-                if (!savePath) break;
-                if (!SaveTransformedPointsTo(*savePath)) {
-                    MessageBoxW(hWnd, L"Failed to write file.", L"Export", MB_OK | MB_ICONERROR);
-                } else {
-                    MessageBoxW(hWnd, L"Transformed points exported successfully.", L"Export", MB_OK | MB_ICONINFORMATION);
-                }
             }
-                break;
-            case IDM_EXIT:
+            auto savePath = ShowSaveTxtDialog(hWnd);
+            if (!savePath) break;
+            if (!SaveTransformedPointsTo(*savePath)) {
+                MessageBoxW(hWnd, L"Failed to write file.", L"Export", MB_OK | MB_ICONERROR);
+            }
+            else {
+                MessageBoxW(hWnd, L"Transformed points exported successfully.", L"Export", MB_OK | MB_ICONINFORMATION);
+            }
+        }
+        break;
+        case IDM_EXIT:
             DestroyWindow(hWnd);
             break;
         default:
@@ -470,7 +471,7 @@ static std::optional<std::filesystem::path> ShowOpenObjDialog(HWND owner)
 
 static std::optional<std::filesystem::path> ShowSaveTxtDialog(HWND owner)
 {
-    wchar_t fileBuf[MAX_PATH] = {0};
+    wchar_t fileBuf[MAX_PATH] = { 0 };
     OPENFILENAMEW ofn{};
     ofn.lStructSize = sizeof(ofn);
     ofn.hwndOwner = owner;
@@ -482,7 +483,7 @@ static std::optional<std::filesystem::path> ShowSaveTxtDialog(HWND owner)
     ofn.lpstrDefExt = L"txt";
     if (GetSaveFileNameW(&ofn))
     {
-        return std::filesystem::path{fileBuf};
+        return std::filesystem::path{ fileBuf };
     }
     return std::nullopt;
 }
@@ -807,6 +808,10 @@ namespace {
 #define IDC_SPHY     5202
 #define IDC_SPHZ     5203
 #define IDC_SPHR     5204
+// Point query dialog control IDs
+#define IDC_PQX      5301
+#define IDC_PQY      5302
+#define IDC_PQZ      5303
 
 struct InputState { const wchar_t* title; const wchar_t* prompt; wchar_t* buf; int buflen; };
 
@@ -914,15 +919,15 @@ static HGLOBAL BuildTransformDialogTemplate()
     w.write_word(8); // font size
     w.write_wstr(L"MS Shell Dlg");
 
-    auto add_label = [&](int x,int y,const wchar_t* text){
+    auto add_label = [&](int x, int y, const wchar_t* text) {
         w.align_dword();
         auto* it = w.write<DLGITEMTEMPLATE>({});
         it->style = WS_CHILD | WS_VISIBLE | SS_LEFT;
         it->x = (short)x; it->y = (short)y; it->cx = 70; it->cy = 10; it->id = (WORD)-1; // no id
         w.write_word(0xFFFF); w.write_word(0x0082); // static class
         w.write_wstr(text); w.write_word(0);
-    };
-    auto add_edit = [&](int x,int y,WORD id){
+        };
+    auto add_edit = [&](int x, int y, WORD id) {
         w.align_dword();
         auto* it = w.write<DLGITEMTEMPLATE>({});
         it->style = WS_CHILD | WS_VISIBLE | WS_BORDER | ES_LEFT | ES_AUTOHSCROLL;
@@ -930,7 +935,7 @@ static HGLOBAL BuildTransformDialogTemplate()
         w.write_word(0xFFFF); w.write_word(0x0081); // edit class
         w.write_word(0); // empty title
         w.write_word(0);
-    };
+        };
 
     int lx = 6, ex = 100; int y = 6; int dy = 14;
     add_label(lx, y, L"Translate X:"); add_edit(ex, y, IDC_TX); y += dy;
@@ -966,7 +971,7 @@ static bool ShowTransformDialog(HWND owner, TransformParams& out)
     HGLOBAL hgl = BuildTransformDialogTemplate();
     if (!hgl) return false;
     // Initialize with current values (default 0,0,0 angles and 1 scale)
-    auto setText = [&](int id, const wchar_t* s){ SetDlgItemTextW((HWND)owner, id, s); };
+    auto setText = [&](int id, const wchar_t* s) { SetDlgItemTextW((HWND)owner, id, s); };
     // We cannot preset easily with runtime template without WM_INIT; so do it in a minimal proc
     struct Ctx { TransformParams* p; } ctx{ &out };
     auto DlgProc = +[](HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)->INT_PTR {
@@ -989,11 +994,11 @@ static bool ShowTransformDialog(HWND owner, TransformParams& out)
             case IDOK: {
                 auto parse = [&](int id, double& v)->bool {
                     wchar_t b[128]{}; GetDlgItemTextW(hDlg, id, b, 127);
-                    wchar_t* e=nullptr; double t = wcstod(b, &e);
-                    if (!e || *e!=L'\0') return false; v = t; return true; };
-                if (!parse(IDC_TX,p->tx) || !parse(IDC_TY,p->ty) || !parse(IDC_TZ,p->tz) ||
-                    !parse(IDC_YAWZ,p->yawZ) || !parse(IDC_PITCHY,p->pitchY) || !parse(IDC_ROLLX,p->rollX) ||
-                    !parse(IDC_SCALE,p->s)) {
+                    wchar_t* e = nullptr; double t = wcstod(b, &e);
+                    if (!e || *e != L'\0') return false; v = t; return true; };
+                if (!parse(IDC_TX, p->tx) || !parse(IDC_TY, p->ty) || !parse(IDC_TZ, p->tz) ||
+                    !parse(IDC_YAWZ, p->yawZ) || !parse(IDC_PITCHY, p->pitchY) || !parse(IDC_ROLLX, p->rollX) ||
+                    !parse(IDC_SCALE, p->s)) {
                     MessageBoxW(hDlg, L"Please enter valid numeric values.", L"Invalid input", MB_OK | MB_ICONWARNING);
                     return TRUE; // stay open
                 }
@@ -1005,9 +1010,9 @@ static bool ShowTransformDialog(HWND owner, TransformParams& out)
             }
         }
         return FALSE;
-    };
+        };
     // Seed defaults from current transform: we don't try to decompose rotation; zeros are fine
-    out = TransformParams{0,0,0,0,0,0,1};
+    out = TransformParams{ 0,0,0,0,0,0,1 };
     INT_PTR r = DialogBoxIndirectParamW(hInst, (LPCDLGTEMPLATEW)GlobalLock(hgl), owner, DlgProc, (LPARAM)&ctx);
     GlobalUnlock(hgl); GlobalFree(hgl);
     return r == IDOK;
@@ -1028,31 +1033,31 @@ static HGLOBAL BuildSphereDialogTemplate()
     w.write_wstr(L"Sphere - Mesh Inputs");
     w.write_word(8); w.write_wstr(L"MS Shell Dlg");
 
-    auto add_label = [&](int x,int y,const wchar_t* text){
+    auto add_label = [&](int x, int y, const wchar_t* text) {
         w.align_dword(); auto* it = w.write<DLGITEMTEMPLATE>({});
-        it->style = WS_CHILD | WS_VISIBLE | SS_LEFT; it->x=(short)x; it->y=(short)y; it->cx=80; it->cy=10; it->id=(WORD)-1;
+        it->style = WS_CHILD | WS_VISIBLE | SS_LEFT; it->x = (short)x; it->y = (short)y; it->cx = 80; it->cy = 10; it->id = (WORD)-1;
         w.write_word(0xFFFF); w.write_word(0x0082); w.write_wstr(text); w.write_word(0);
-    };
-    auto add_edit = [&](int x,int y,WORD id){
+        };
+    auto add_edit = [&](int x, int y, WORD id) {
         w.align_dword(); auto* it = w.write<DLGITEMTEMPLATE>({});
-        it->style = WS_CHILD | WS_VISIBLE | WS_BORDER | ES_LEFT | ES_AUTOHSCROLL; it->x=(short)x; it->y=(short)y; it->cx=70; it->cy=12; it->id=id;
+        it->style = WS_CHILD | WS_VISIBLE | WS_BORDER | ES_LEFT | ES_AUTOHSCROLL; it->x = (short)x; it->y = (short)y; it->cx = 70; it->cy = 12; it->id = id;
         w.write_word(0xFFFF); w.write_word(0x0081); w.write_word(0); w.write_word(0);
-    };
+        };
 
-    int lx=6, ex=95, y=6, dy=14;
-    add_label(lx,y,L"Center X:"); add_edit(ex,y,IDC_SPHX); y+=dy;
-    add_label(lx,y,L"Center Y:"); add_edit(ex,y,IDC_SPHY); y+=dy;
-    add_label(lx,y,L"Center Z:"); add_edit(ex,y,IDC_SPHZ); y+=dy;
-    add_label(lx,y,L"Radius:");   add_edit(ex,y,IDC_SPHR); y+=dy;
+    int lx = 6, ex = 95, y = 6, dy = 14;
+    add_label(lx, y, L"Center X:"); add_edit(ex, y, IDC_SPHX); y += dy;
+    add_label(lx, y, L"Center Y:"); add_edit(ex, y, IDC_SPHY); y += dy;
+    add_label(lx, y, L"Center Z:"); add_edit(ex, y, IDC_SPHZ); y += dy;
+    add_label(lx, y, L"Radius:");   add_edit(ex, y, IDC_SPHR); y += dy;
 
     // OK button
     w.align_dword(); auto* it = w.write<DLGITEMTEMPLATE>({});
-    it->style = WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON; it->x=60; it->y=(short)(y+4); it->cx=40; it->cy=14; it->id=IDOK;
+    it->style = WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON; it->x = 60; it->y = (short)(y + 4); it->cx = 40; it->cy = 14; it->id = IDOK;
     w.write_word(0xFFFF); w.write_word(0x0080); w.write_wstr(L"OK"); w.write_word(0);
 
     // Cancel button
     w.align_dword(); it = w.write<DLGITEMTEMPLATE>({});
-    it->style = WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON; it->x=110; it->y=(short)(y+4); it->cx=50; it->cy=14; it->id=IDCANCEL;
+    it->style = WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON; it->x = 110; it->y = (short)(y + 4); it->cx = 50; it->cy = 14; it->id = IDCANCEL;
     w.write_word(0xFFFF); w.write_word(0x0080); w.write_wstr(L"Cancel"); w.write_word(0);
 
     w.fini(); return w.hgl;
@@ -1063,25 +1068,107 @@ static bool ShowSphereDialog(HWND owner, SphereParams& out)
     HGLOBAL hgl = BuildSphereDialogTemplate(); if (!hgl) return false;
     struct Ctx { SphereParams* p; } ctx{ &out };
     auto DlgProc = +[](HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)->INT_PTR {
-        static SphereParams* p=nullptr;
-        if (msg==WM_INITDIALOG){ p=reinterpret_cast<Ctx*>(lParam)->p; wchar_t b[64];
-            swprintf_s(b,L"%.3f",p->cx); SetDlgItemTextW(hDlg, IDC_SPHX, b);
-            swprintf_s(b,L"%.3f",p->cy); SetDlgItemTextW(hDlg, IDC_SPHY, b);
-            swprintf_s(b,L"%.3f",p->cz); SetDlgItemTextW(hDlg, IDC_SPHZ, b);
-            swprintf_s(b,L"%.3f",p->r);  SetDlgItemTextW(hDlg, IDC_SPHR, b);
-            return TRUE; }
-        if (msg==WM_COMMAND){ switch(LOWORD(wParam)){
-            case IDOK:{ auto parse=[&](int id,double&v){ wchar_t b[128]{}; GetDlgItemTextW(hDlg,id,b,127); wchar_t*e=nullptr; double t=wcstod(b,&e); if(!e||*e!=L'\0') return false; v=t; return true; };
-                if(!parse(IDC_SPHX,p->cx)||!parse(IDC_SPHY,p->cy)||!parse(IDC_SPHZ,p->cz)||!parse(IDC_SPHR,p->r)){
-                    MessageBoxW(hDlg,L"Please enter valid numeric values.",L"Invalid input",MB_OK|MB_ICONWARNING); return TRUE; }
-                EndDialog(hDlg,IDOK); return TRUE; }
-            case IDCANCEL: EndDialog(hDlg,IDCANCEL); return TRUE; }
+        static SphereParams* p = nullptr;
+        if (msg == WM_INITDIALOG) {
+            p = reinterpret_cast<Ctx*>(lParam)->p; wchar_t b[64];
+            swprintf_s(b, L"%.3f", p->cx); SetDlgItemTextW(hDlg, IDC_SPHX, b);
+            swprintf_s(b, L"%.3f", p->cy); SetDlgItemTextW(hDlg, IDC_SPHY, b);
+            swprintf_s(b, L"%.3f", p->cz); SetDlgItemTextW(hDlg, IDC_SPHZ, b);
+            swprintf_s(b, L"%.3f", p->r);  SetDlgItemTextW(hDlg, IDC_SPHR, b);
+            return TRUE;
+        }
+        if (msg == WM_COMMAND) {
+            switch (LOWORD(wParam)) {
+            case IDOK: {
+                auto parse = [&](int id, double& v) { wchar_t b[128]{}; GetDlgItemTextW(hDlg, id, b, 127); wchar_t* e = nullptr; double t = wcstod(b, &e); if (!e || *e != L'\0') return false; v = t; return true; };
+                if (!parse(IDC_SPHX, p->cx) || !parse(IDC_SPHY, p->cy) || !parse(IDC_SPHZ, p->cz) || !parse(IDC_SPHR, p->r)) {
+                    MessageBoxW(hDlg, L"Please enter valid numeric values.", L"Invalid input", MB_OK | MB_ICONWARNING); return TRUE;
+                }
+                EndDialog(hDlg, IDOK); return TRUE;
+            }
+            case IDCANCEL: EndDialog(hDlg, IDCANCEL); return TRUE;
+            }
         }
         return FALSE; };
-    out = SphereParams{0,0,0,1};
-    INT_PTR r = DialogBoxIndirectParamW(hInst,(LPCDLGTEMPLATEW)GlobalLock(hgl),owner,DlgProc,(LPARAM)&ctx);
+    out = SphereParams{ 0,0,0,1 };
+    INT_PTR r = DialogBoxIndirectParamW(hInst, (LPCDLGTEMPLATEW)GlobalLock(hgl), owner, DlgProc, (LPARAM)&ctx);
     GlobalUnlock(hgl); GlobalFree(hgl);
-    return r==IDOK;
+    return r == IDOK;
+}
+
+// ---------- Nearest-Point single-input dialog ----------
+static HGLOBAL BuildPointDialogTemplate()
+{
+    DLGTEMPLATE_WRITER w;
+    if (!w.init(2048)) return nullptr;
+
+    auto* dt = w.write<DLGTEMPLATE>({});
+    dt->style = DS_MODALFRAME | DS_SETFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU;
+    dt->cdit = 8; // 3 labels + 3 edits + 2 buttons
+    dt->x = 10; dt->y = 10; dt->cx = 210; dt->cy = 80;
+    w.write_word(0);
+    w.write_word(0);
+    w.write_wstr(L"Nearest Point Inputs");
+    w.write_word(8); w.write_wstr(L"MS Shell Dlg");
+
+    auto add_label = [&](int x, int y, const wchar_t* text) {
+        w.align_dword(); auto* it = w.write<DLGITEMTEMPLATE>({});
+        it->style = WS_CHILD | WS_VISIBLE | SS_LEFT; it->x = (short)x; it->y = (short)y; it->cx = 70; it->cy = 10; it->id = (WORD)-1;
+        w.write_word(0xFFFF); w.write_word(0x0082); w.write_wstr(text); w.write_word(0);
+        };
+    auto add_edit = [&](int x, int y, WORD id) {
+        w.align_dword(); auto* it = w.write<DLGITEMTEMPLATE>({});
+        it->style = WS_CHILD | WS_VISIBLE | WS_BORDER | ES_LEFT | ES_AUTOHSCROLL; it->x = (short)x; it->y = (short)y; it->cx = 70; it->cy = 12; it->id = id;
+        w.write_word(0xFFFF); w.write_word(0x0081); w.write_word(0); w.write_word(0);
+        };
+
+    int lx = 6, ex = 90, y = 6, dy = 14;
+    add_label(lx, y, L"X:"); add_edit(ex, y, IDC_PQX); y += dy;
+    add_label(lx, y, L"Y:"); add_edit(ex, y, IDC_PQY); y += dy;
+    add_label(lx, y, L"Z:"); add_edit(ex, y, IDC_PQZ); y += dy;
+
+    // OK/Cancel
+    w.align_dword(); auto* it = w.write<DLGITEMTEMPLATE>({});
+    it->style = WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON; it->x = 50; it->y = (short)(y + 4); it->cx = 40; it->cy = 14; it->id = IDOK;
+    w.write_word(0xFFFF); w.write_word(0x0080); w.write_wstr(L"OK"); w.write_word(0);
+
+    w.align_dword(); it = w.write<DLGITEMTEMPLATE>({});
+    it->style = WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON; it->x = 100; it->y = (short)(y + 4); it->cx = 50; it->cy = 14; it->id = IDCANCEL;
+    w.write_word(0xFFFF); w.write_word(0x0080); w.write_wstr(L"Cancel"); w.write_word(0);
+
+    w.fini(); return w.hgl;
+}
+
+static bool ShowPointDialog(HWND owner, PointQueryParams& out)
+{
+    HGLOBAL hgl = BuildPointDialogTemplate(); if (!hgl) return false;
+    struct Ctx { PointQueryParams* p; } ctx{ &out };
+    auto DlgProc = +[](HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)->INT_PTR {
+        static PointQueryParams* p = nullptr;
+        if (msg == WM_INITDIALOG) {
+            p = reinterpret_cast<Ctx*>(lParam)->p; wchar_t b[64];
+            swprintf_s(b, L"%.3f", p->x); SetDlgItemTextW(hDlg, IDC_PQX, b);
+            swprintf_s(b, L"%.3f", p->y); SetDlgItemTextW(hDlg, IDC_PQY, b);
+            swprintf_s(b, L"%.3f", p->z); SetDlgItemTextW(hDlg, IDC_PQZ, b);
+            return TRUE;
+        }
+        if (msg == WM_COMMAND) {
+            switch (LOWORD(wParam)) {
+            case IDOK: {
+                auto parse = [&](int id, double& v) { wchar_t b[128]{}; GetDlgItemTextW(hDlg, id, b, 127); wchar_t* e = nullptr; double t = wcstod(b, &e); if (!e || *e != L'\0') return false; v = t; return true; };
+                if (!parse(IDC_PQX, p->x) || !parse(IDC_PQY, p->y) || !parse(IDC_PQZ, p->z)) {
+                    MessageBoxW(hDlg, L"Please enter valid numeric values.", L"Invalid input", MB_OK | MB_ICONWARNING); return TRUE;
+                }
+                EndDialog(hDlg, IDOK); return TRUE;
+            }
+            case IDCANCEL: EndDialog(hDlg, IDCANCEL); return TRUE;
+            }
+        }
+        return FALSE; };
+    out = PointQueryParams{ 0,0,0 };
+    INT_PTR r = DialogBoxIndirectParamW(hInst, (LPCDLGTEMPLATEW)GlobalLock(hgl), owner, DlgProc, (LPARAM)&ctx);
+    GlobalUnlock(hgl); GlobalFree(hgl);
+    return r == IDOK;
 }
 
 static bool PromptDouble(HWND owner, const wchar_t* title, const wchar_t* prompt, double& out)
