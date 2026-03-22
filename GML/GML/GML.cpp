@@ -57,6 +57,10 @@ static void   XfSetTranslationRotationUniformScaleEuler(Transform4x4& t, double 
 static Point3 XfApplyPointRowMajor(const double m[16], const Point3& p);
 static double XfMaxColumnNorm3x3(const double m[16]);
 
+// Forward declarations for the transform dialog used in the menu handler
+struct TransformParams { double tx, ty, tz, yawZ, pitchY, rollX, s; };
+static bool ShowTransformDialog(HWND owner, TransformParams& out);
+
 static void UpdateSummaryText();
 static void BuildKDTreeFromPoints();
 static bool LoadOBJ(const std::filesystem::path& path,
@@ -296,21 +300,15 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             InvalidateRect(hWnd, nullptr, TRUE);
         }
         break;
-        case IDM_SETTRANSFORM:
-        {
-            double tx = 0, ty = 0, tz = 0, yawZ = 0, pitchY = 0, rollX = 0, s = 1;
-            if (!PromptDouble(hWnd, L"Set Transform", L"Translate X:", tx)) break;
-            if (!PromptDouble(hWnd, L"Set Transform", L"Translate Y:", ty)) break;
-            if (!PromptDouble(hWnd, L"Set Transform", L"Translate Z:", tz)) break;
-            if (!PromptDouble(hWnd, L"Set Transform", L"Yaw Z (deg):", yawZ)) break;
-            if (!PromptDouble(hWnd, L"Set Transform", L"Pitch Y (deg):", pitchY)) break;
-            if (!PromptDouble(hWnd, L"Set Transform", L"Roll X (deg):", rollX)) break;
-            if (!PromptDouble(hWnd, L"Set Transform", L"Uniform Scale:", s)) break;
-            XfSetTranslationRotationUniformScaleEuler(g_modelXf, tx, ty, tz, rollX, pitchY, yawZ, s);
-            UpdateSummaryText();
-            InvalidateRect(hWnd, nullptr, TRUE);
-        }
-        break;
+            case IDM_SETTRANSFORM:
+            {
+                TransformParams p{0,0,0,0,0,0,1};
+                if (!ShowTransformDialog(hWnd, p)) break;
+                XfSetTranslationRotationUniformScaleEuler(g_modelXf, p.tx, p.ty, p.tz, p.rollX, p.pitchY, p.yawZ, p.s);
+                UpdateSummaryText();
+                InvalidateRect(hWnd, nullptr, TRUE);
+            }
+                break;
         case IDM_EXIT:
             DestroyWindow(hWnd);
             break;
@@ -745,6 +743,15 @@ namespace {
 #define IDC_IN_TEXT  5002
 #define IDC_IN_EDIT  5001
 
+// IDs for Transform dialog controls
+#define IDC_TX       5101
+#define IDC_TY       5102
+#define IDC_TZ       5103
+#define IDC_YAWZ     5104
+#define IDC_PITCHY   5105
+#define IDC_ROLLX    5106
+#define IDC_SCALE    5107
+
 struct InputState { const wchar_t* title; const wchar_t* prompt; wchar_t* buf; int buflen; };
 
 static INT_PTR CALLBACK InputDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)
@@ -831,6 +838,123 @@ static HGLOBAL BuildSingleInputDialogTemplate()
 
     w.fini();
     return w.hgl;
+}
+
+// ---------- Transform dialog (single window with 7 edits) ----------
+
+static HGLOBAL BuildTransformDialogTemplate()
+{
+    // Layout: labels+edits in two columns, then OK/Cancel
+    DLGTEMPLATE_WRITER w;
+    if (!w.init(4096)) return nullptr;
+
+    auto* dt = w.write<DLGTEMPLATE>({});
+    dt->style = DS_MODALFRAME | DS_SETFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU;
+    dt->cdit = 16; // 7 labels + 7 edits + 2 buttons
+    dt->x = 10; dt->y = 10; dt->cx = 240; dt->cy = 130; // increased size so all controls fit
+    w.write_word(0); // no menu
+    w.write_word(0); // default class
+    w.write_wstr(L"Set Transform (T,R,S)");
+    w.write_word(8); // font size
+    w.write_wstr(L"MS Shell Dlg");
+
+    auto add_label = [&](int x,int y,const wchar_t* text){
+        w.align_dword();
+        auto* it = w.write<DLGITEMTEMPLATE>({});
+        it->style = WS_CHILD | WS_VISIBLE | SS_LEFT;
+        it->x = (short)x; it->y = (short)y; it->cx = 70; it->cy = 10; it->id = (WORD)-1; // no id
+        w.write_word(0xFFFF); w.write_word(0x0082); // static class
+        w.write_wstr(text); w.write_word(0);
+    };
+    auto add_edit = [&](int x,int y,WORD id){
+        w.align_dword();
+        auto* it = w.write<DLGITEMTEMPLATE>({});
+        it->style = WS_CHILD | WS_VISIBLE | WS_BORDER | ES_LEFT | ES_AUTOHSCROLL;
+        it->x = (short)x; it->y = (short)y; it->cx = 60; it->cy = 12; it->id = id;
+        w.write_word(0xFFFF); w.write_word(0x0081); // edit class
+        w.write_word(0); // empty title
+        w.write_word(0);
+    };
+
+    int lx = 6, ex = 100; int y = 6; int dy = 14;
+    add_label(lx, y, L"Translate X:"); add_edit(ex, y, IDC_TX); y += dy;
+    add_label(lx, y, L"Translate Y:"); add_edit(ex, y, IDC_TY); y += dy;
+    add_label(lx, y, L"Translate Z:"); add_edit(ex, y, IDC_TZ); y += dy;
+    add_label(lx, y, L"Yaw Z (deg):"); add_edit(ex, y, IDC_YAWZ); y += dy;
+    add_label(lx, y, L"Pitch Y (deg):"); add_edit(ex, y, IDC_PITCHY); y += dy;
+    add_label(lx, y, L"Roll X (deg):"); add_edit(ex, y, IDC_ROLLX); y += dy;
+    add_label(lx, y, L"Uniform Scale:"); add_edit(ex, y, IDC_SCALE); y += dy;
+
+    // OK button
+    w.align_dword();
+    auto* it = w.write<DLGITEMTEMPLATE>({});
+    it->style = WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON;
+    it->x = 80; it->y = (short)(y + 6); it->cx = 50; it->cy = 14; it->id = IDOK;
+    w.write_word(0xFFFF); w.write_word(0x0080); // button class
+    w.write_wstr(L"OK"); w.write_word(0);
+
+    // Cancel button
+    w.align_dword();
+    it = w.write<DLGITEMTEMPLATE>({});
+    it->style = WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON;
+    it->x = 140; it->y = (short)(y + 6); it->cx = 60; it->cy = 14; it->id = IDCANCEL;
+    w.write_word(0xFFFF); w.write_word(0x0080);
+    w.write_wstr(L"Cancel"); w.write_word(0);
+
+    w.fini();
+    return w.hgl;
+}
+
+static bool ShowTransformDialog(HWND owner, TransformParams& out)
+{
+    HGLOBAL hgl = BuildTransformDialogTemplate();
+    if (!hgl) return false;
+    // Initialize with current values (default 0,0,0 angles and 1 scale)
+    auto setText = [&](int id, const wchar_t* s){ SetDlgItemTextW((HWND)owner, id, s); };
+    // We cannot preset easily with runtime template without WM_INIT; so do it in a minimal proc
+    struct Ctx { TransformParams* p; } ctx{ &out };
+    auto DlgProc = +[](HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)->INT_PTR {
+        static TransformParams* p = nullptr;
+        if (msg == WM_INITDIALOG) {
+            p = reinterpret_cast<Ctx*>(lParam)->p;
+            // Defaults
+            wchar_t buf[64];
+            swprintf_s(buf, L"%.3f", p->tx); SetDlgItemTextW(hDlg, IDC_TX, buf);
+            swprintf_s(buf, L"%.3f", p->ty); SetDlgItemTextW(hDlg, IDC_TY, buf);
+            swprintf_s(buf, L"%.3f", p->tz); SetDlgItemTextW(hDlg, IDC_TZ, buf);
+            swprintf_s(buf, L"%.3f", p->yawZ); SetDlgItemTextW(hDlg, IDC_YAWZ, buf);
+            swprintf_s(buf, L"%.3f", p->pitchY); SetDlgItemTextW(hDlg, IDC_PITCHY, buf);
+            swprintf_s(buf, L"%.3f", p->rollX); SetDlgItemTextW(hDlg, IDC_ROLLX, buf);
+            swprintf_s(buf, L"%.3f", p->s); SetDlgItemTextW(hDlg, IDC_SCALE, buf);
+            return TRUE;
+        }
+        if (msg == WM_COMMAND) {
+            switch (LOWORD(wParam)) {
+            case IDOK: {
+                auto parse = [&](int id, double& v)->bool {
+                    wchar_t b[128]{}; GetDlgItemTextW(hDlg, id, b, 127);
+                    wchar_t* e=nullptr; double t = wcstod(b, &e);
+                    if (!e || *e!=L'\0') return false; v = t; return true; };
+                if (!parse(IDC_TX,p->tx) || !parse(IDC_TY,p->ty) || !parse(IDC_TZ,p->tz) ||
+                    !parse(IDC_YAWZ,p->yawZ) || !parse(IDC_PITCHY,p->pitchY) || !parse(IDC_ROLLX,p->rollX) ||
+                    !parse(IDC_SCALE,p->s)) {
+                    MessageBoxW(hDlg, L"Please enter valid numeric values.", L"Invalid input", MB_OK | MB_ICONWARNING);
+                    return TRUE; // stay open
+                }
+                EndDialog(hDlg, IDOK);
+                return TRUE;
+            }
+            case IDCANCEL:
+                EndDialog(hDlg, IDCANCEL); return TRUE;
+            }
+        }
+        return FALSE;
+    };
+    // Seed defaults from current transform: we don't try to decompose rotation; zeros are fine
+    out = TransformParams{0,0,0,0,0,0,1};
+    INT_PTR r = DialogBoxIndirectParamW(hInst, (LPCDLGTEMPLATEW)GlobalLock(hgl), owner, DlgProc, (LPARAM)&ctx);
+    GlobalUnlock(hgl); GlobalFree(hgl);
+    return r == IDOK;
 }
 
 static bool PromptDouble(HWND owner, const wchar_t* title, const wchar_t* prompt, double& out)
