@@ -13,6 +13,8 @@
 #include <iomanip>
 #include <optional>
 #include <chrono>
+#include <algorithm>
+#include <cmath>
 #include <commdlg.h>
 #pragma comment(lib, "Comdlg32.lib")
 
@@ -32,15 +34,22 @@ INT_PTR CALLBACK    AddNumbersDlgProc(HWND, UINT, WPARAM, LPARAM);
 
 // OBJ geometry storage and helpers
 struct Point3 { double x = 0, y = 0, z = 0; };
+struct Triangle { int i0 = -1, i1 = -1, i2 = -1; };
 static std::vector<Point3> g_points;            // loaded 3D points
+static std::vector<Triangle> g_tris;            // loaded triangles (indices into g_points)
+static std::vector<std::vector<int>> g_vertexToTris; // adjacency: vertex -> triangle indices
+static double g_maxEdgeLen = 0.0;               // global max edge length for conservative KD culling
 static std::wstring g_summary;                  // text rendered in the main window
 static gml::KDTree3d g_kdtree;                  // KD-tree built from g_points
 
 static void UpdateSummaryText();
 static void BuildKDTreeFromPoints();
-static bool LoadOBJPoints(const std::filesystem::path& path,
-                          std::vector<Point3>& out,
-                          std::wstring& error);
+static bool LoadOBJ(const std::filesystem::path& path,
+                    std::vector<Point3>& outPts,
+                    std::vector<Triangle>& outTris,
+                    std::wstring& error);
+static void BuildAdjacencyAndEdgeStats();
+static bool SphereIntersectsMeshKDRefined(double cx, double cy, double cz, double r);
 static std::optional<std::filesystem::path> ShowOpenObjDialog(HWND owner);
 
 // Simple single-input modal dialog (built at runtime) to capture a double value.
@@ -139,6 +148,7 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
    {
        AppendMenuW(hMenu, MF_STRING, IDM_LOADOBJ, L"&Load OBJ...");
        AppendMenuW(hMenu, MF_STRING, IDM_FINDNEAREST, L"&Find Nearest Point...");
+       AppendMenuW(hMenu, MF_STRING, IDM_SPHEREMESH, L"&Sphere–Mesh Intersect...");
        DrawMenuBar(hWnd);
    }
 
@@ -174,16 +184,19 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             case IDM_ADDNUM:
                 DialogBox(hInst, MAKEINTRESOURCE(IDD_ADDNUM), hWnd, AddNumbersDlgProc);
                 break;
-            case IDM_LOADOBJ:
+case IDM_LOADOBJ:
             {
                 auto sel = ShowOpenObjDialog(hWnd);
                 if (sel)
                 {
                     std::wstring error;
-                    std::vector<Point3> tmp;
-                    if (LoadOBJPoints(*sel, tmp, error))
+                    std::vector<Point3> tmpPts;
+                    std::vector<Triangle> tmpTris;
+                    if (LoadOBJ(*sel, tmpPts, tmpTris, error))
                     {
-                        g_points = std::move(tmp);
+                        g_points = std::move(tmpPts);
+                        g_tris = std::move(tmpTris);
+                        BuildAdjacencyAndEdgeStats();
                         BuildKDTreeFromPoints();
                         UpdateSummaryText();
                         InvalidateRect(hWnd, nullptr, TRUE);
@@ -226,6 +239,30 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                     << L"Compute time: " << us << L" microseconds";
                 MessageBoxW(hWnd, oss.str().c_str(), L"Nearest Point Result", MB_OK | MB_ICONINFORMATION);
                 // Prepend to summary and repaint
+                g_summary = oss.str() + L"\r\n\r\n" + g_summary;
+                InvalidateRect(hWnd, nullptr, TRUE);
+            }
+                break;
+            case IDM_SPHEREMESH:
+            {
+                if (g_kdtree.empty()) {
+                    MessageBoxW(hWnd, L"No mesh loaded. Use 'Load OBJ...' first.", L"Sphere-Mesh", MB_OK | MB_ICONINFORMATION);
+                    break;
+                }
+                double cx=0, cy=0, cz=0, r=1;
+                if (!PromptDouble(hWnd, L"Sphere–Mesh", L"Center X:", cx)) break;
+                if (!PromptDouble(hWnd, L"Sphere–Mesh", L"Center Y:", cy)) break;
+                if (!PromptDouble(hWnd, L"Sphere–Mesh", L"Center Z:", cz)) break;
+                if (!PromptDouble(hWnd, L"Sphere–Mesh", L"Radius:", r)) break;
+                auto t0 = std::chrono::steady_clock::now();
+                const bool hit = SphereIntersectsMeshKDRefined(cx, cy, cz, r);
+                auto t1 = std::chrono::steady_clock::now();
+                const auto us = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
+                std::wostringstream oss;
+                oss.setf(std::ios::fixed, std::ios::floatfield);
+                oss << (hit ? L"INTERSECT" : L"DISJOINT") << L"\r\nTime: " << us << L" us\r\n"
+                    << L"Vertices: " << g_points.size() << L", Triangles: " << g_tris.size();
+                MessageBoxW(hWnd, oss.str().c_str(), L"Sphere–Mesh Result", MB_OK | MB_ICONINFORMATION);
                 g_summary = oss.str() + L"\r\n\r\n" + g_summary;
                 InvalidateRect(hWnd, nullptr, TRUE);
             }
@@ -323,6 +360,8 @@ static void UpdateSummaryText()
     std::wostringstream oss;
     oss.setf(std::ios::fixed, std::ios::floatfield);
     oss << L"Points loaded: " << g_points.size() << L"\r\n";
+    oss << L"Triangles loaded: " << g_tris.size() << L"\r\n";
+    oss << L"Max edge length: " << std::setprecision(6) << g_maxEdgeLen << L"\r\n";
     oss << L"Format: index: x y z\r\n\r\n";
     oss << std::setprecision(6);
     for (size_t i = 0; i < g_points.size(); ++i)
@@ -365,43 +404,181 @@ static std::optional<std::filesystem::path> ShowOpenObjDialog(HWND owner)
     return std::nullopt;
 }
 
-// Minimal OBJ parser: collects lines that start with "v " as 3D points.
-static bool LoadOBJPoints(const std::filesystem::path& path,
-                          std::vector<Point3>& out,
-                          std::wstring& error)
+// OBJ parser: loads vertex positions (v) and faces (f). Faces are triangulated via fan method.
+static bool LoadOBJ(const std::filesystem::path& path,
+                    std::vector<Point3>& outPts,
+                    std::vector<Triangle>& outTris,
+                    std::wstring& error)
 {
-    out.clear();
+    outPts.clear();
+    outTris.clear();
     std::ifstream in(path, std::ios::in);
     if (!in.is_open())
     {
         error = L"Could not open file: " + path.wstring();
         return false;
     }
+    auto parse_index = [](const std::string& tok, size_t vcount) -> std::optional<int>
+    {
+        // Extract the vertex index before first '/'
+        size_t slash = tok.find('/');
+        std::string s = tok.substr(0, slash);
+        if (s.empty()) return std::nullopt;
+        char* endp = nullptr;
+        long idx = strtol(s.c_str(), &endp, 10);
+        if (endp == s.c_str()) return std::nullopt;
+        // OBJ: positive indices are 1-based; negative are relative to end
+        long actual = 0;
+        if (idx > 0) actual = idx; else actual = (long)vcount + idx + 1;
+        if (actual < 1 || actual > (long)vcount) return std::nullopt;
+        return static_cast<int>(actual - 1); // to 0-based
+    };
+
     std::string line;
     while (std::getline(in, line))
     {
-        // Skip leading spaces
-        size_t i = 0;
-        while (i < line.size() && (line[i] == ' ' || line[i] == '\t')) ++i;
-        if (i >= line.size()) continue;
-        if (line[i] != 'v') continue; // only vertex positions
-        ++i;
-        if (i < line.size() && (line[i] == 'n' || line[i] == 't')) continue; // skip vn/vt
-        if (i < line.size() && !(line[i] == ' ' || line[i] == '\t')) continue; // require whitespace after 'v'
-        // Parse x y z (ignore optional w)
-        double x = 0, y = 0, z = 0;
-        std::istringstream iss(line.substr(i));
-        if (iss >> x >> y >> z)
-        {
-            out.push_back(Point3{x, y, z});
+        // trim leading spaces
+        size_t i = 0; while (i < line.size() && (line[i]==' '||line[i]=='\t')) ++i; if (i>=line.size()) continue;
+        if (line[i] == 'v') {
+            ++i;
+            if (i < line.size() && (line[i] == 'n' || line[i] == 't')) continue; // skip vn/vt
+            if (i < line.size() && !(line[i] == ' ' || line[i] == '\t')) continue; // require whitespace after 'v'
+            double x=0,y=0,z=0; std::istringstream iss(line.substr(i));
+            if (iss >> x >> y >> z) outPts.push_back(Point3{ x,y,z });
+        } else if (line[i] == 'f') {
+            ++i; if (i >= line.size()) continue;
+            // tokenise remaining line by whitespace
+            std::vector<int> poly;
+            std::istringstream iss(line.substr(i));
+            std::string tok;
+            while (iss >> tok) {
+                auto id = parse_index(tok, outPts.size());
+                if (id) poly.push_back(*id);
+            }
+            if (poly.size() < 3) continue;
+            for (size_t k = 2; k < poly.size(); ++k) {
+                outTris.push_back(Triangle{ poly[0], poly[k-1], poly[k] });
+            }
         }
     }
-    if (out.empty())
+    if (outPts.empty())
     {
         error = L"No vertex positions (v) found in file.";
         return false;
     }
+    // Faces are optional; it's OK if outTris is empty (point cloud)
     return true;
+}
+
+static inline double Distance(const Point3& a, const Point3& b)
+{
+    const double dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
+    return std::sqrt(dx*dx + dy*dy + dz*dz);
+}
+
+static void BuildAdjacencyAndEdgeStats()
+{
+    g_vertexToTris.assign(g_points.size(), {});
+    g_maxEdgeLen = 0.0;
+    for (size_t ti = 0; ti < g_tris.size(); ++ti) {
+        const auto& t = g_tris[ti];
+        if (t.i0<0 || t.i1<0 || t.i2<0 ||
+            t.i0 >= (int)g_points.size() || t.i1 >= (int)g_points.size() || t.i2 >= (int)g_points.size()) {
+            continue; // ignore invalid triangles defensively
+        }
+        g_vertexToTris[t.i0].push_back((int)ti);
+        g_vertexToTris[t.i1].push_back((int)ti);
+        g_vertexToTris[t.i2].push_back((int)ti);
+        const auto& a=g_points[t.i0]; const auto& b=g_points[t.i1]; const auto& c=g_points[t.i2];
+        g_maxEdgeLen = std::max({ g_maxEdgeLen, Distance(a,b), Distance(b,c), Distance(c,a) });
+    }
+}
+
+static double DistancePointTriangle(const Point3& p, const Point3& a, const Point3& b, const Point3& c)
+{
+    // Real-Time Collision Detection, Christer Ericson, closest point on triangle
+    auto dot = [](double ax,double ay,double az,double bx,double by,double bz){ return ax*bx+ay*by+az*bz; };
+    auto sub = [](const Point3& u,const Point3& v){ return Point3{u.x-v.x,u.y-v.y,u.z-v.z}; };
+    const Point3 ab = sub(b,a);
+    const Point3 ac = sub(c,a);
+    const Point3 ap = sub(p,a);
+    double d1 = dot(ab.x,ab.y,ab.z, ap.x,ap.y,ap.z);
+    double d2 = dot(ac.x,ac.y,ac.z, ap.x,ap.y,ap.z);
+    if (d1 <= 0.0 && d2 <= 0.0) return Distance(p,a); // barycentric (1,0,0)
+
+    const Point3 bp = sub(p,b);
+    double d3 = dot(ab.x,ab.y,ab.z, bp.x,bp.y,bp.z);
+    double d4 = dot(ac.x,ac.y,ac.z, bp.x,bp.y,bp.z);
+    if (d3 >= 0.0 && d4 <= d3) return Distance(p,b); // barycentric (0,1,0)
+
+    double vc = d1*d4 - d3*d2;
+    if (vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0) {
+        double v = d1 / (d1 - d3);
+        Point3 proj{ a.x + v*ab.x, a.y + v*ab.y, a.z + v*ab.z };
+        return Distance(p, proj);
+    }
+
+    const Point3 cp = sub(p,c);
+    double d5 = dot(ab.x,ab.y,ab.z, cp.x,cp.y,cp.z);
+    double d6 = dot(ac.x,ac.y,ac.z, cp.x,cp.y,cp.z);
+    if (d6 >= 0.0 && d5 <= d6) return Distance(p,c); // barycentric (0,0,1)
+
+    double vb = d5*d2 - d1*d6;
+    if (vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0) {
+        double w = d2 / (d2 - d6);
+        Point3 proj{ a.x + w*ac.x, a.y + w*ac.y, a.z + w*ac.z };
+        return Distance(p, proj);
+    }
+
+    double va = d3*d6 - d5*d4;
+    if (va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0) {
+        Point3 bc{ b.x + ((d4 - d3)/((d4 - d3) + (d5 - d6))) * (c.x - b.x),
+                   b.y + ((d4 - d3)/((d4 - d3) + (d5 - d6))) * (c.y - b.y),
+                   b.z + ((d4 - d3)/((d4 - d3) + (d5 - d6))) * (c.z - b.z) };
+        return Distance(p, bc);
+    }
+
+    // Inside face region: project to plane using barycentric coordinates
+    double denom = (ab.x*ab.x+ab.y*ab.y+ab.z*ab.z) * (ac.x*ac.x+ac.y*ac.y+ac.z*ac.z) - (ab.x*ac.x+ab.y*ac.y+ab.z*ac.z)*(ab.x*ac.x+ab.y*ac.y+ab.z*ac.z);
+    double s = ( (ab.x*ap.x+ab.y*ap.y+ab.z*ap.z) * (ac.x*ac.x+ac.y*ac.y+ac.z*ac.z) - (ac.x*ap.x+ac.y*ap.y+ac.z*ap.z) * (ab.x*ac.x+ab.y*ac.y+ab.z*ac.z) ) / denom;
+    double t = ( (ac.x*ap.x+ac.y*ap.y+ac.z*ap.z) * (ab.x*ab.x+ab.y*ab.y+ab.z*ab.z) - (ab.x*ap.x+ab.y*ap.y+ab.z*ap.z) * (ab.x*ac.x+ab.y*ac.y+ab.z*ac.z) ) / denom;
+    Point3 proj{ a.x + s*ab.x + t*ac.x, a.y + s*ab.y + t*ac.y, a.z + s*ab.z + t*ac.z };
+    return Distance(p, proj);
+}
+
+static bool SphereIntersectsMeshKDRefined(double cx, double cy, double cz, double r)
+{
+    if (r < 0.0) r = 0.0;
+    if (g_kdtree.empty()) return false;
+    const gml::KDTree3d::Point q{ cx, cy, cz };
+    if (g_tris.empty()) {
+        // Fallback: point-cloud only
+        auto nearest = g_kdtree.nearest(q);
+        return nearest && nearest->distance <= r;
+    }
+    const double searchR = r + g_maxEdgeLen; // conservative expansion to not miss edge-only intersections
+    auto items = g_kdtree.radiusSearch(q, searchR);
+    if (items.empty()) return false; // no nearby vertices at all
+    std::vector<char> marked(g_tris.size(), 0);
+    std::vector<int> candidates;
+    candidates.reserve(items.size() * 6);
+    for (const auto& it : items) {
+        int vi = (int)std::llround(it.value);
+        if (vi < 0 || vi >= (int)g_vertexToTris.size()) continue;
+        for (int ti : g_vertexToTris[vi]) {
+            if (!marked[ti]) { marked[ti] = 1; candidates.push_back(ti); }
+        }
+    }
+    const Point3 center{ cx, cy, cz };
+    for (int ti : candidates) {
+        const auto& t = g_tris[ti];
+        const auto& a = g_points[t.i0];
+        const auto& b = g_points[t.i1];
+        const auto& c = g_points[t.i2];
+        const double d = DistancePointTriangle(center, a, b, c);
+        if (d <= r) return true;
+    }
+    return false;
 }
 
 // ---------- Runtime single-input dialog implementation ----------
