@@ -42,6 +42,19 @@ static double g_maxEdgeLen = 0.0;               // global max edge length for co
 static std::wstring g_summary;                  // text rendered in the main window
 static gml::KDTree3d g_kdtree;                  // KD-tree built from g_points
 
+// Simple model transform stored alongside the KDTree (row-major 4x4; last row [0 0 0 1])
+struct Transform4x4 {
+    double m[16];   // model->world
+    double inv[16]; // world->model
+};
+static Transform4x4 g_modelXf; // identity by default (initialized in code below)
+
+// Forward declarations of transform helpers (defined later in this file)
+static void   XfSetIdentity(Transform4x4& t);
+static void   XfSetTranslationUniformScale(Transform4x4& t, double tx,double ty,double tz,double s);
+static Point3 XfApplyPointRowMajor(const double m[16], const Point3& p);
+static double XfMaxColumnNorm3x3(const double m[16]);
+
 static void UpdateSummaryText();
 static void BuildKDTreeFromPoints();
 static bool LoadOBJ(const std::filesystem::path& path,
@@ -149,11 +162,15 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
        AppendMenuW(hMenu, MF_STRING, IDM_LOADOBJ, L"&Load OBJ...");
        AppendMenuW(hMenu, MF_STRING, IDM_FINDNEAREST, L"&Find Nearest Point...");
        AppendMenuW(hMenu, MF_STRING, IDM_SPHEREMESH, L"&Sphere–Mesh Intersect...");
+       AppendMenuW(hMenu, MF_STRING, IDM_SETTRANSFORM, L"&Set Transform (T,S)...");
        DrawMenuBar(hWnd);
    }
 
    ShowWindow(hWnd, nCmdShow);
    UpdateWindow(hWnd);
+
+   // Initialize transform to identity on startup
+   XfSetIdentity(g_modelXf);
 
    return TRUE;
 }
@@ -218,7 +235,9 @@ case IDM_LOADOBJ:
                 if (!PromptDouble(hWnd, L"Nearest Point", L"Enter X:", x)) break;
                 if (!PromptDouble(hWnd, L"Nearest Point", L"Enter Y:", y)) break;
                 if (!PromptDouble(hWnd, L"Nearest Point", L"Enter Z:", z)) break;
-                gml::KDTree3d::Point q{ x, y, z };
+                Point3 qw{ x, y, z };
+                Point3 ql = XfApplyPointRowMajor(g_modelXf.inv, qw); // world->model
+                gml::KDTree3d::Point q{ ql.x, ql.y, ql.z };
                 auto t0 = std::chrono::steady_clock::now();
                 auto res = g_kdtree.nearest(q);
                 auto t1 = std::chrono::steady_clock::now();
@@ -264,6 +283,18 @@ case IDM_LOADOBJ:
                     << L"Vertices: " << g_points.size() << L", Triangles: " << g_tris.size();
                 MessageBoxW(hWnd, oss.str().c_str(), L"Sphere–Mesh Result", MB_OK | MB_ICONINFORMATION);
                 g_summary = oss.str() + L"\r\n\r\n" + g_summary;
+                InvalidateRect(hWnd, nullptr, TRUE);
+            }
+                break;
+            case IDM_SETTRANSFORM:
+            {
+                double tx=0,ty=0,tz=0,s=1;
+                if (!PromptDouble(hWnd, L"Set Transform", L"Translate X:", tx)) break;
+                if (!PromptDouble(hWnd, L"Set Transform", L"Translate Y:", ty)) break;
+                if (!PromptDouble(hWnd, L"Set Transform", L"Translate Z:", tz)) break;
+                if (!PromptDouble(hWnd, L"Set Transform", L"Uniform Scale:", s)) break;
+                XfSetTranslationUniformScale(g_modelXf, tx,ty,tz,s);
+                UpdateSummaryText();
                 InvalidateRect(hWnd, nullptr, TRUE);
             }
                 break;
@@ -362,6 +393,11 @@ static void UpdateSummaryText()
     oss << L"Points loaded: " << g_points.size() << L"\r\n";
     oss << L"Triangles loaded: " << g_tris.size() << L"\r\n";
     oss << L"Max edge length: " << std::setprecision(6) << g_maxEdgeLen << L"\r\n";
+    oss << L"Transform (row-major): ["
+        << g_modelXf.m[0] << L"," << g_modelXf.m[1] << L"," << g_modelXf.m[2] << L"," << g_modelXf.m[3] << L"; "
+        << g_modelXf.m[4] << L"," << g_modelXf.m[5] << L"," << g_modelXf.m[6] << L"," << g_modelXf.m[7] << L"; "
+        << g_modelXf.m[8] << L"," << g_modelXf.m[9] << L"," << g_modelXf.m[10] << L"," << g_modelXf.m[11] << L"; "
+        << g_modelXf.m[12] << L"," << g_modelXf.m[13] << L"," << g_modelXf.m[14] << L"," << g_modelXf.m[15] << L"]\r\n";
     oss << L"Format: index: x y z\r\n\r\n";
     oss << std::setprecision(6);
     for (size_t i = 0; i < g_points.size(); ++i)
@@ -402,6 +438,40 @@ static std::optional<std::filesystem::path> ShowOpenObjDialog(HWND owner)
         return std::filesystem::path{fileBuf};
     }
     return std::nullopt;
+}
+
+// ---------- Transform helpers ----------
+static void XfSetIdentity(Transform4x4& t)
+{
+    for (int i = 0; i < 16; ++i) t.m[i] = t.inv[i] = 0.0;
+    t.m[0]=t.m[5]=t.m[10]=t.m[15]=1.0;
+    t.inv[0]=t.inv[5]=t.inv[10]=t.inv[15]=1.0;
+}
+static void XfSetTranslationUniformScale(Transform4x4& t, double tx,double ty,double tz,double s)
+{
+    if (s == 0.0) s = 1.0;
+    for (int i = 0; i < 16; ++i) t.m[i] = t.inv[i] = 0.0;
+    // m = S then T: x_world = s*x + t
+    t.m[0]=t.m[5]=t.m[10]=s; t.m[15]=1.0; t.m[3]=tx; t.m[7]=ty; t.m[11]=tz;
+    // inv: x_model = (x_world - t) / s
+    const double is = 1.0/s;
+    t.inv[0]=t.inv[5]=t.inv[10]=is; t.inv[15]=1.0; t.inv[3]=-tx*is; t.inv[7]=-ty*is; t.inv[11]=-tz*is;
+}
+static Point3 XfApplyPointRowMajor(const double m[16], const Point3& p)
+{
+    const double x = m[0]*p.x + m[1]*p.y + m[2]*p.z + m[3];
+    const double y = m[4]*p.x + m[5]*p.y + m[6]*p.z + m[7];
+    const double z = m[8]*p.x + m[9]*p.y + m[10]*p.z + m[11];
+    // assume affine w=1
+    return Point3{ x, y, z };
+}
+static double XfMaxColumnNorm3x3(const double m[16])
+{
+    // Column norms of the 3x3 linear part (row-major storage)
+    const double c0 = std::sqrt(m[0]*m[0] + m[4]*m[4] + m[8]*m[8]);
+    const double c1 = std::sqrt(m[1]*m[1] + m[5]*m[5] + m[9]*m[9]);
+    const double c2 = std::sqrt(m[2]*m[2] + m[6]*m[6] + m[10]*m[10]);
+    return std::max({c0,c1,c2});
 }
 
 // OBJ parser: loads vertex positions (v) and faces (f). Faces are triangulated via fan method.
@@ -550,13 +620,19 @@ static bool SphereIntersectsMeshKDRefined(double cx, double cy, double cz, doubl
 {
     if (r < 0.0) r = 0.0;
     if (g_kdtree.empty()) return false;
-    const gml::KDTree3d::Point q{ cx, cy, cz };
+    // Transform world-space center into model space
+    Point3 cw{cx,cy,cz};
+    Point3 cm = XfApplyPointRowMajor(g_modelXf.inv, cw);
+    // Conservative local radius under world->model linear map
+    const double smax = XfMaxColumnNorm3x3(g_modelXf.inv);
+    const double r_local = r * smax;
+    const gml::KDTree3d::Point q{ cm.x, cm.y, cm.z };
     if (g_tris.empty()) {
         // Fallback: point-cloud only
         auto nearest = g_kdtree.nearest(q);
-        return nearest && nearest->distance <= r;
+        return nearest && nearest->distance <= r_local;
     }
-    const double searchR = r + g_maxEdgeLen; // conservative expansion to not miss edge-only intersections
+    const double searchR = r_local + g_maxEdgeLen; // conservative expansion to not miss edge-only intersections
     auto items = g_kdtree.radiusSearch(q, searchR);
     if (items.empty()) return false; // no nearby vertices at all
     std::vector<char> marked(g_tris.size(), 0);
