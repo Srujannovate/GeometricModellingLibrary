@@ -57,9 +57,11 @@ static void   XfSetTranslationRotationUniformScaleEuler(Transform4x4& t, double 
 static Point3 XfApplyPointRowMajor(const double m[16], const Point3& p);
 static double XfMaxColumnNorm3x3(const double m[16]);
 
-// Forward declarations for the transform dialog used in the menu handler
+// Forward declarations for dialogs used in menu handlers
 struct TransformParams { double tx, ty, tz, yawZ, pitchY, rollX, s; };
 static bool ShowTransformDialog(HWND owner, TransformParams& out);
+struct SphereParams { double cx, cy, cz, r; };
+static bool ShowSphereDialog(HWND owner, SphereParams& out);
 
 static void UpdateSummaryText();
 static void BuildKDTreeFromPoints();
@@ -279,19 +281,16 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             InvalidateRect(hWnd, nullptr, TRUE);
         }
         break;
-        case IDM_SPHEREMESH:
-        {
-            if (g_kdtree.empty()) {
-                MessageBoxW(hWnd, L"No mesh loaded. Use 'Load OBJ...' first.", L"Sphere-Mesh", MB_OK | MB_ICONINFORMATION);
-                break;
-            }
-            double cx = 0, cy = 0, cz = 0, r = 1;
-            if (!PromptDouble(hWnd, L"Sphere - Mesh", L"Center X:", cx)) break;
-            if (!PromptDouble(hWnd, L"Sphere - Mesh", L"Center Y:", cy)) break;
-            if (!PromptDouble(hWnd, L"Sphere - Mesh", L"Center Z:", cz)) break;
-            if (!PromptDouble(hWnd, L"Sphere - Mesh", L"Radius:", r)) break;
-            auto t0 = std::chrono::steady_clock::now();
-            const bool hit = SphereIntersectsMeshKDRefined(cx, cy, cz, r);
+            case IDM_SPHEREMESH:
+            {
+                if (g_kdtree.empty()) {
+                    MessageBoxW(hWnd, L"No mesh loaded. Use 'Load OBJ...' first.", L"Sphere-Mesh", MB_OK | MB_ICONINFORMATION);
+                    break;
+                }
+                SphereParams sp{0,0,0,1};
+                if (!ShowSphereDialog(hWnd, sp)) break;
+                auto t0 = std::chrono::steady_clock::now();
+                const bool hit = SphereIntersectsMeshKDRefined(sp.cx, sp.cy, sp.cz, sp.r);
             auto t1 = std::chrono::steady_clock::now();
             const auto us = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
             std::wostringstream oss;
@@ -803,6 +802,11 @@ namespace {
 #define IDC_PITCHY   5105
 #define IDC_ROLLX    5106
 #define IDC_SCALE    5107
+// Sphere dialog control IDs
+#define IDC_SPHX     5201
+#define IDC_SPHY     5202
+#define IDC_SPHZ     5203
+#define IDC_SPHR     5204
 
 struct InputState { const wchar_t* title; const wchar_t* prompt; wchar_t* buf; int buflen; };
 
@@ -1007,6 +1011,77 @@ static bool ShowTransformDialog(HWND owner, TransformParams& out)
     INT_PTR r = DialogBoxIndirectParamW(hInst, (LPCDLGTEMPLATEW)GlobalLock(hgl), owner, DlgProc, (LPARAM)&ctx);
     GlobalUnlock(hgl); GlobalFree(hgl);
     return r == IDOK;
+}
+
+// ---------- Sphere–Mesh single-input dialog ----------
+static HGLOBAL BuildSphereDialogTemplate()
+{
+    DLGTEMPLATE_WRITER w;
+    if (!w.init(2048)) return nullptr;
+
+    auto* dt = w.write<DLGTEMPLATE>({});
+    dt->style = DS_MODALFRAME | DS_SETFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU;
+    dt->cdit = 10; // 4 labels + 4 edits + 2 buttons
+    dt->x = 10; dt->y = 10; dt->cx = 220; dt->cy = 90;
+    w.write_word(0); // no menu
+    w.write_word(0); // default class
+    w.write_wstr(L"Sphere - Mesh Inputs");
+    w.write_word(8); w.write_wstr(L"MS Shell Dlg");
+
+    auto add_label = [&](int x,int y,const wchar_t* text){
+        w.align_dword(); auto* it = w.write<DLGITEMTEMPLATE>({});
+        it->style = WS_CHILD | WS_VISIBLE | SS_LEFT; it->x=(short)x; it->y=(short)y; it->cx=80; it->cy=10; it->id=(WORD)-1;
+        w.write_word(0xFFFF); w.write_word(0x0082); w.write_wstr(text); w.write_word(0);
+    };
+    auto add_edit = [&](int x,int y,WORD id){
+        w.align_dword(); auto* it = w.write<DLGITEMTEMPLATE>({});
+        it->style = WS_CHILD | WS_VISIBLE | WS_BORDER | ES_LEFT | ES_AUTOHSCROLL; it->x=(short)x; it->y=(short)y; it->cx=70; it->cy=12; it->id=id;
+        w.write_word(0xFFFF); w.write_word(0x0081); w.write_word(0); w.write_word(0);
+    };
+
+    int lx=6, ex=95, y=6, dy=14;
+    add_label(lx,y,L"Center X:"); add_edit(ex,y,IDC_SPHX); y+=dy;
+    add_label(lx,y,L"Center Y:"); add_edit(ex,y,IDC_SPHY); y+=dy;
+    add_label(lx,y,L"Center Z:"); add_edit(ex,y,IDC_SPHZ); y+=dy;
+    add_label(lx,y,L"Radius:");   add_edit(ex,y,IDC_SPHR); y+=dy;
+
+    // OK button
+    w.align_dword(); auto* it = w.write<DLGITEMTEMPLATE>({});
+    it->style = WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON; it->x=60; it->y=(short)(y+4); it->cx=40; it->cy=14; it->id=IDOK;
+    w.write_word(0xFFFF); w.write_word(0x0080); w.write_wstr(L"OK"); w.write_word(0);
+
+    // Cancel button
+    w.align_dword(); it = w.write<DLGITEMTEMPLATE>({});
+    it->style = WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON; it->x=110; it->y=(short)(y+4); it->cx=50; it->cy=14; it->id=IDCANCEL;
+    w.write_word(0xFFFF); w.write_word(0x0080); w.write_wstr(L"Cancel"); w.write_word(0);
+
+    w.fini(); return w.hgl;
+}
+
+static bool ShowSphereDialog(HWND owner, SphereParams& out)
+{
+    HGLOBAL hgl = BuildSphereDialogTemplate(); if (!hgl) return false;
+    struct Ctx { SphereParams* p; } ctx{ &out };
+    auto DlgProc = +[](HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)->INT_PTR {
+        static SphereParams* p=nullptr;
+        if (msg==WM_INITDIALOG){ p=reinterpret_cast<Ctx*>(lParam)->p; wchar_t b[64];
+            swprintf_s(b,L"%.3f",p->cx); SetDlgItemTextW(hDlg, IDC_SPHX, b);
+            swprintf_s(b,L"%.3f",p->cy); SetDlgItemTextW(hDlg, IDC_SPHY, b);
+            swprintf_s(b,L"%.3f",p->cz); SetDlgItemTextW(hDlg, IDC_SPHZ, b);
+            swprintf_s(b,L"%.3f",p->r);  SetDlgItemTextW(hDlg, IDC_SPHR, b);
+            return TRUE; }
+        if (msg==WM_COMMAND){ switch(LOWORD(wParam)){
+            case IDOK:{ auto parse=[&](int id,double&v){ wchar_t b[128]{}; GetDlgItemTextW(hDlg,id,b,127); wchar_t*e=nullptr; double t=wcstod(b,&e); if(!e||*e!=L'\0') return false; v=t; return true; };
+                if(!parse(IDC_SPHX,p->cx)||!parse(IDC_SPHY,p->cy)||!parse(IDC_SPHZ,p->cz)||!parse(IDC_SPHR,p->r)){
+                    MessageBoxW(hDlg,L"Please enter valid numeric values.",L"Invalid input",MB_OK|MB_ICONWARNING); return TRUE; }
+                EndDialog(hDlg,IDOK); return TRUE; }
+            case IDCANCEL: EndDialog(hDlg,IDCANCEL); return TRUE; }
+        }
+        return FALSE; };
+    out = SphereParams{0,0,0,1};
+    INT_PTR r = DialogBoxIndirectParamW(hInst,(LPCDLGTEMPLATEW)GlobalLock(hgl),owner,DlgProc,(LPARAM)&ctx);
+    GlobalUnlock(hgl); GlobalFree(hgl);
+    return r==IDOK;
 }
 
 static bool PromptDouble(HWND owner, const wchar_t* title, const wchar_t* prompt, double& out)
