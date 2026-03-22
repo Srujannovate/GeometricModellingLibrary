@@ -70,6 +70,8 @@ static bool LoadOBJ(const std::filesystem::path& path,
 static void BuildAdjacencyAndEdgeStats();
 static bool SphereIntersectsMeshKDRefined(double cx, double cy, double cz, double r);
 static std::optional<std::filesystem::path> ShowOpenObjDialog(HWND owner);
+static std::optional<std::filesystem::path> ShowSaveTxtDialog(HWND owner);
+static bool SaveTransformedPointsTo(const std::filesystem::path& path);
 
 // Simple single-input modal dialog (built at runtime) to capture a double value.
 static bool PromptDouble(HWND owner, const wchar_t* title, const wchar_t* prompt, double& out);
@@ -166,9 +168,10 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
     if (HMENU hMenu = GetMenu(hWnd))
     {
         // Build a File menu and move Load OBJ under it; insert at position 0 so it appears first
-        HMENU hFile = CreatePopupMenu();
-        AppendMenuW(hFile, MF_STRING, IDM_LOADOBJ, L"&Load OBJ...");
-        InsertMenuW(hMenu, 1, MF_BYPOSITION | MF_POPUP, (UINT_PTR)hFile, L"&Load");
+        HMENU hModel = CreatePopupMenu();
+        AppendMenuW(hModel, MF_STRING, IDM_LOADOBJ, L"&Load OBJ...");
+        AppendMenuW(hModel, MF_STRING, IDM_EXPORT_TRANSFORMED, L"&Export Transformed Points...");
+        InsertMenuW(hMenu, 1, MF_BYPOSITION | MF_POPUP, (UINT_PTR)hModel, L"&Model");
 
         // Build an Edit menu for queries/intersections/transforms; insert at position 1
         HMENU hEdit = CreatePopupMenu();
@@ -309,7 +312,22 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                 InvalidateRect(hWnd, nullptr, TRUE);
             }
                 break;
-        case IDM_EXIT:
+            case IDM_EXPORT_TRANSFORMED:
+            {
+                if (g_points.empty()) {
+                    MessageBoxW(hWnd, L"No model loaded. Use Load OBJ first.", L"Export", MB_OK | MB_ICONINFORMATION);
+                    break;
+                }
+                auto savePath = ShowSaveTxtDialog(hWnd);
+                if (!savePath) break;
+                if (!SaveTransformedPointsTo(*savePath)) {
+                    MessageBoxW(hWnd, L"Failed to write file.", L"Export", MB_OK | MB_ICONERROR);
+                } else {
+                    MessageBoxW(hWnd, L"Transformed points exported successfully.", L"Export", MB_OK | MB_ICONINFORMATION);
+                }
+            }
+                break;
+            case IDM_EXIT:
             DestroyWindow(hWnd);
             break;
         default:
@@ -449,6 +467,40 @@ static std::optional<std::filesystem::path> ShowOpenObjDialog(HWND owner)
         return std::filesystem::path{ fileBuf };
     }
     return std::nullopt;
+}
+
+static std::optional<std::filesystem::path> ShowSaveTxtDialog(HWND owner)
+{
+    wchar_t fileBuf[MAX_PATH] = {0};
+    OPENFILENAMEW ofn{};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = owner;
+    ofn.lpstrFilter = L"Text Files (*.txt)\0*.txt\0All Files (*.*)\0*.*\0\0";
+    ofn.lpstrFile = fileBuf;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.Flags = OFN_OVERWRITEPROMPT | OFN_EXPLORER;
+    ofn.lpstrTitle = L"Export Transformed Points";
+    ofn.lpstrDefExt = L"txt";
+    if (GetSaveFileNameW(&ofn))
+    {
+        return std::filesystem::path{fileBuf};
+    }
+    return std::nullopt;
+}
+
+static bool SaveTransformedPointsTo(const std::filesystem::path& path)
+{
+    if (g_points.empty()) return false;
+    std::ofstream out(path, std::ios::out | std::ios::trunc);
+    if (!out.is_open()) return false;
+    out.setf(std::ios::fixed, std::ios::floatfield);
+    out << std::setprecision(9);
+    for (const auto& p : g_points)
+    {
+        Point3 pw = XfApplyPointRowMajor(g_modelXf.m, p);
+        out << pw.x << ' ' << pw.y << ' ' << pw.z << "\n";
+    }
+    return true;
 }
 
 // ---------- Transform helpers ----------
