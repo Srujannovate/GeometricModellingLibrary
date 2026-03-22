@@ -51,16 +51,18 @@ static Transform4x4 g_modelXf; // identity by default (initialized in code below
 
 // Forward declarations of transform helpers (defined later in this file)
 static void   XfSetIdentity(Transform4x4& t);
-static void   XfSetTranslationUniformScale(Transform4x4& t, double tx,double ty,double tz,double s);
+static void   XfSetTranslationUniformScale(Transform4x4& t, double tx, double ty, double tz, double s);
+static void   XfSetTranslationRotationUniformScaleEuler(Transform4x4& t, double tx, double ty, double tz,
+    double rx_deg, double ry_deg, double rz_deg, double s);
 static Point3 XfApplyPointRowMajor(const double m[16], const Point3& p);
 static double XfMaxColumnNorm3x3(const double m[16]);
 
 static void UpdateSummaryText();
 static void BuildKDTreeFromPoints();
 static bool LoadOBJ(const std::filesystem::path& path,
-                    std::vector<Point3>& outPts,
-                    std::vector<Triangle>& outTris,
-                    std::wstring& error);
+    std::vector<Point3>& outPts,
+    std::vector<Triangle>& outTris,
+    std::wstring& error);
 static void BuildAdjacencyAndEdgeStats();
 static bool SphereIntersectsMeshKDRefined(double cx, double cy, double cz, double r);
 static std::optional<std::filesystem::path> ShowOpenObjDialog(HWND owner);
@@ -69,9 +71,9 @@ static std::optional<std::filesystem::path> ShowOpenObjDialog(HWND owner);
 static bool PromptDouble(HWND owner, const wchar_t* title, const wchar_t* prompt, double& out);
 
 int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
-                     _In_opt_ HINSTANCE hPrevInstance,
-                     _In_ LPWSTR    lpCmdLine,
-                     _In_ int       nCmdShow)
+    _In_opt_ HINSTANCE hPrevInstance,
+    _In_ LPWSTR    lpCmdLine,
+    _In_ int       nCmdShow)
 {
     UNREFERENCED_PARAMETER(hPrevInstance);
     UNREFERENCED_PARAMETER(lpCmdLine);
@@ -84,7 +86,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     MyRegisterClass(hInstance);
 
     // Perform application initialization:
-    if (!InitInstance (hInstance, nCmdShow))
+    if (!InitInstance(hInstance, nCmdShow))
     {
         return FALSE;
     }
@@ -103,7 +105,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
         }
     }
 
-    return (int) msg.wParam;
+    return (int)msg.wParam;
 }
 
 
@@ -119,17 +121,17 @@ ATOM MyRegisterClass(HINSTANCE hInstance)
 
     wcex.cbSize = sizeof(WNDCLASSEX);
 
-    wcex.style          = CS_HREDRAW | CS_VREDRAW;
-    wcex.lpfnWndProc    = WndProc;
-    wcex.cbClsExtra     = 0;
-    wcex.cbWndExtra     = 0;
-    wcex.hInstance      = hInstance;
-    wcex.hIcon          = LoadIcon(hInstance, MAKEINTRESOURCE(IDI_GML));
-    wcex.hCursor        = LoadCursor(nullptr, IDC_ARROW);
-    wcex.hbrBackground  = (HBRUSH)(COLOR_WINDOW+1);
-    wcex.lpszMenuName   = MAKEINTRESOURCEW(IDC_GML);
-    wcex.lpszClassName  = szWindowClass;
-    wcex.hIconSm        = LoadIcon(wcex.hInstance, MAKEINTRESOURCE(IDI_SMALL));
+    wcex.style = CS_HREDRAW | CS_VREDRAW;
+    wcex.lpfnWndProc = WndProc;
+    wcex.cbClsExtra = 0;
+    wcex.cbWndExtra = 0;
+    wcex.hInstance = hInstance;
+    wcex.hIcon = LoadIcon(hInstance, MAKEINTRESOURCE(IDI_GML));
+    wcex.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    wcex.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+    wcex.lpszMenuName = MAKEINTRESOURCEW(IDC_GML);
+    wcex.lpszClassName = szWindowClass;
+    wcex.hIconSm = LoadIcon(wcex.hInstance, MAKEINTRESOURCE(IDI_SMALL));
 
     return RegisterClassExW(&wcex);
 }
@@ -146,33 +148,41 @@ ATOM MyRegisterClass(HINSTANCE hInstance)
 //
 BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
 {
-   hInst = hInstance; // Store instance handle in our global variable
+    hInst = hInstance; // Store instance handle in our global variable
 
-   HWND hWnd = CreateWindowW(szWindowClass, szTitle, WS_OVERLAPPEDWINDOW,
-      CW_USEDEFAULT, 0, CW_USEDEFAULT, 0, nullptr, nullptr, hInstance, nullptr);
+    HWND hWnd = CreateWindowW(szWindowClass, szTitle, WS_OVERLAPPEDWINDOW,
+        CW_USEDEFAULT, 0, CW_USEDEFAULT, 0, nullptr, nullptr, hInstance, nullptr);
 
-   if (!hWnd)
-   {
-      return FALSE;
-   }
+    if (!hWnd)
+    {
+        return FALSE;
+    }
 
-   // Insert a "Load OBJ..." menu item at runtime to avoid editing resources.
-   if (HMENU hMenu = GetMenu(hWnd))
-   {
-       AppendMenuW(hMenu, MF_STRING, IDM_LOADOBJ, L"&Load OBJ...");
-       AppendMenuW(hMenu, MF_STRING, IDM_FINDNEAREST, L"&Find Nearest Point...");
-       AppendMenuW(hMenu, MF_STRING, IDM_SPHEREMESH, L"&Sphere–Mesh Intersect...");
-       AppendMenuW(hMenu, MF_STRING, IDM_SETTRANSFORM, L"&Set Transform (T,S)...");
-       DrawMenuBar(hWnd);
-   }
+    // Insert a "Load OBJ..." menu item at runtime to avoid editing resources.
+    if (HMENU hMenu = GetMenu(hWnd))
+    {
+        // Build a File menu and move Load OBJ under it; insert at position 0 so it appears first
+        HMENU hFile = CreatePopupMenu();
+        AppendMenuW(hFile, MF_STRING, IDM_LOADOBJ, L"&Load OBJ...");
+        InsertMenuW(hMenu, 1, MF_BYPOSITION | MF_POPUP, (UINT_PTR)hFile, L"&Load");
 
-   ShowWindow(hWnd, nCmdShow);
-   UpdateWindow(hWnd);
+        // Build an Edit menu for queries/intersections/transforms; insert at position 1
+        HMENU hEdit = CreatePopupMenu();
+        AppendMenuW(hEdit, MF_STRING, IDM_FINDNEAREST, L"Find &Nearest Point...");
+        AppendMenuW(hEdit, MF_STRING, IDM_SPHEREMESH, L"Sphere - Mesh &Intersect...");
+        AppendMenuW(hEdit, MF_STRING, IDM_SETTRANSFORM, L"Set &Transform (T,R,S)...");
+        InsertMenuW(hMenu, 2, MF_BYPOSITION | MF_POPUP, (UINT_PTR)hEdit, L"&Edit");
 
-   // Initialize transform to identity on startup
-   XfSetIdentity(g_modelXf);
+        DrawMenuBar(hWnd);
+    }
 
-   return TRUE;
+    ShowWindow(hWnd, nCmdShow);
+    UpdateWindow(hWnd);
+
+    // Initialize transform to identity on startup
+    XfSetIdentity(g_modelXf);
+
+    return TRUE;
 }
 
 //
@@ -190,137 +200,140 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     switch (message)
     {
     case WM_COMMAND:
+    {
+        int wmId = LOWORD(wParam);
+        // Parse the menu selections:
+        switch (wmId)
         {
-            int wmId = LOWORD(wParam);
-            // Parse the menu selections:
-            switch (wmId)
+        case IDM_ABOUT:
+            DialogBox(hInst, MAKEINTRESOURCE(IDD_ABOUTBOX), hWnd, About);
+            break;
+        case IDM_ADDNUM:
+            DialogBox(hInst, MAKEINTRESOURCE(IDD_ADDNUM), hWnd, AddNumbersDlgProc);
+            break;
+        case IDM_LOADOBJ:
+        {
+            auto sel = ShowOpenObjDialog(hWnd);
+            if (sel)
             {
-            case IDM_ABOUT:
-                DialogBox(hInst, MAKEINTRESOURCE(IDD_ABOUTBOX), hWnd, About);
-                break;
-            case IDM_ADDNUM:
-                DialogBox(hInst, MAKEINTRESOURCE(IDD_ADDNUM), hWnd, AddNumbersDlgProc);
-                break;
-case IDM_LOADOBJ:
-            {
-                auto sel = ShowOpenObjDialog(hWnd);
-                if (sel)
+                std::wstring error;
+                std::vector<Point3> tmpPts;
+                std::vector<Triangle> tmpTris;
+                if (LoadOBJ(*sel, tmpPts, tmpTris, error))
                 {
-                    std::wstring error;
-                    std::vector<Point3> tmpPts;
-                    std::vector<Triangle> tmpTris;
-                    if (LoadOBJ(*sel, tmpPts, tmpTris, error))
-                    {
-                        g_points = std::move(tmpPts);
-                        g_tris = std::move(tmpTris);
-                        BuildAdjacencyAndEdgeStats();
-                        BuildKDTreeFromPoints();
-                        UpdateSummaryText();
-                        InvalidateRect(hWnd, nullptr, TRUE);
-                    }
-                    else
-                    {
-                        MessageBoxW(hWnd, error.c_str(), L"Failed to load OBJ", MB_OK | MB_ICONERROR);
-                    }
+                    g_points = std::move(tmpPts);
+                    g_tris = std::move(tmpTris);
+                    BuildAdjacencyAndEdgeStats();
+                    BuildKDTreeFromPoints();
+                    UpdateSummaryText();
+                    InvalidateRect(hWnd, nullptr, TRUE);
                 }
-            }
-                break;
-            case IDM_FINDNEAREST:
-            {
-                if (g_kdtree.empty()) {
-                    MessageBoxW(hWnd, L"No points loaded. Use 'Load OBJ...' first.", L"KDTree", MB_OK | MB_ICONINFORMATION);
-                    break;
+                else
+                {
+                    MessageBoxW(hWnd, error.c_str(), L"Failed to load OBJ", MB_OK | MB_ICONERROR);
                 }
-                double x=0,y=0,z=0;
-                if (!PromptDouble(hWnd, L"Nearest Point", L"Enter X:", x)) break;
-                if (!PromptDouble(hWnd, L"Nearest Point", L"Enter Y:", y)) break;
-                if (!PromptDouble(hWnd, L"Nearest Point", L"Enter Z:", z)) break;
-                Point3 qw{ x, y, z };
-                Point3 ql = XfApplyPointRowMajor(g_modelXf.inv, qw); // world->model
-                gml::KDTree3d::Point q{ ql.x, ql.y, ql.z };
-                auto t0 = std::chrono::steady_clock::now();
-                auto res = g_kdtree.nearest(q);
-                auto t1 = std::chrono::steady_clock::now();
-                const auto us = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
-                if (!res) {
-                    MessageBoxW(hWnd, L"KDTree query failed (no data).", L"KDTree", MB_OK | MB_ICONWARNING);
-                    break;
-                }
-                const auto& it = res->item;
-                const double dist = res->distance;
-                int idx = static_cast<int>(std::llround(it.value));
-                std::wostringstream oss;
-                oss.setf(std::ios::fixed, std::ios::floatfield);
-                oss << std::setprecision(6)
-                    << L"Query: (" << x << L", " << y << L", " << z << L")\r\n"
-                    << L"Nearest index: " << idx << L" at (" << it.point[0] << L", " << it.point[1] << L", " << it.point[2] << L")\r\n"
-                    << L"Distance: " << dist << L"\r\n"
-                    << L"Compute time: " << us << L" microseconds";
-                MessageBoxW(hWnd, oss.str().c_str(), L"Nearest Point Result", MB_OK | MB_ICONINFORMATION);
-                // Prepend to summary and repaint
-                g_summary = oss.str() + L"\r\n\r\n" + g_summary;
-                InvalidateRect(hWnd, nullptr, TRUE);
-            }
-                break;
-            case IDM_SPHEREMESH:
-            {
-                if (g_kdtree.empty()) {
-                    MessageBoxW(hWnd, L"No mesh loaded. Use 'Load OBJ...' first.", L"Sphere-Mesh", MB_OK | MB_ICONINFORMATION);
-                    break;
-                }
-                double cx=0, cy=0, cz=0, r=1;
-                if (!PromptDouble(hWnd, L"Sphere–Mesh", L"Center X:", cx)) break;
-                if (!PromptDouble(hWnd, L"Sphere–Mesh", L"Center Y:", cy)) break;
-                if (!PromptDouble(hWnd, L"Sphere–Mesh", L"Center Z:", cz)) break;
-                if (!PromptDouble(hWnd, L"Sphere–Mesh", L"Radius:", r)) break;
-                auto t0 = std::chrono::steady_clock::now();
-                const bool hit = SphereIntersectsMeshKDRefined(cx, cy, cz, r);
-                auto t1 = std::chrono::steady_clock::now();
-                const auto us = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
-                std::wostringstream oss;
-                oss.setf(std::ios::fixed, std::ios::floatfield);
-                oss << (hit ? L"INTERSECT" : L"DISJOINT") << L"\r\nTime: " << us << L" us\r\n"
-                    << L"Vertices: " << g_points.size() << L", Triangles: " << g_tris.size();
-                MessageBoxW(hWnd, oss.str().c_str(), L"Sphere–Mesh Result", MB_OK | MB_ICONINFORMATION);
-                g_summary = oss.str() + L"\r\n\r\n" + g_summary;
-                InvalidateRect(hWnd, nullptr, TRUE);
-            }
-                break;
-            case IDM_SETTRANSFORM:
-            {
-                double tx=0,ty=0,tz=0,s=1;
-                if (!PromptDouble(hWnd, L"Set Transform", L"Translate X:", tx)) break;
-                if (!PromptDouble(hWnd, L"Set Transform", L"Translate Y:", ty)) break;
-                if (!PromptDouble(hWnd, L"Set Transform", L"Translate Z:", tz)) break;
-                if (!PromptDouble(hWnd, L"Set Transform", L"Uniform Scale:", s)) break;
-                XfSetTranslationUniformScale(g_modelXf, tx,ty,tz,s);
-                UpdateSummaryText();
-                InvalidateRect(hWnd, nullptr, TRUE);
-            }
-                break;
-            case IDM_EXIT:
-                DestroyWindow(hWnd);
-                break;
-            default:
-                return DefWindowProc(hWnd, message, wParam, lParam);
             }
         }
         break;
-    case WM_PAINT:
+        case IDM_FINDNEAREST:
         {
-            PAINTSTRUCT ps;
-            HDC hdc = BeginPaint(hWnd, &ps);
-            // Render summary text with the loaded point count and coordinates.
-            RECT rc{};
-            GetClientRect(hWnd, &rc);
-            DrawTextW(hdc,
-                      g_summary.c_str(),
-                      static_cast<int>(g_summary.size()),
-                      &rc,
-                      DT_LEFT | DT_TOP | DT_NOPREFIX | DT_WORDBREAK);
-            EndPaint(hWnd, &ps);
+            if (g_kdtree.empty()) {
+                MessageBoxW(hWnd, L"No points loaded. Use 'Load OBJ...' first.", L"KDTree", MB_OK | MB_ICONINFORMATION);
+                break;
+            }
+            double x = 0, y = 0, z = 0;
+            if (!PromptDouble(hWnd, L"Nearest Point", L"Enter X:", x)) break;
+            if (!PromptDouble(hWnd, L"Nearest Point", L"Enter Y:", y)) break;
+            if (!PromptDouble(hWnd, L"Nearest Point", L"Enter Z:", z)) break;
+            Point3 qw{ x, y, z };
+            Point3 ql = XfApplyPointRowMajor(g_modelXf.inv, qw); // world->model
+            gml::KDTree3d::Point q{ ql.x, ql.y, ql.z };
+            auto t0 = std::chrono::steady_clock::now();
+            auto res = g_kdtree.nearest(q);
+            auto t1 = std::chrono::steady_clock::now();
+            const auto us = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
+            if (!res) {
+                MessageBoxW(hWnd, L"KDTree query failed (no data).", L"KDTree", MB_OK | MB_ICONWARNING);
+                break;
+            }
+            const auto& it = res->item;
+            const double dist = res->distance;
+            int idx = static_cast<int>(std::llround(it.value));
+            std::wostringstream oss;
+            oss.setf(std::ios::fixed, std::ios::floatfield);
+            oss << std::setprecision(6)
+                << L"Query: (" << x << L", " << y << L", " << z << L")\r\n"
+                << L"Nearest index: " << idx << L" at (" << it.point[0] << L", " << it.point[1] << L", " << it.point[2] << L")\r\n"
+                << L"Distance: " << dist << L"\r\n"
+                << L"Compute time: " << us << L" microseconds";
+            MessageBoxW(hWnd, oss.str().c_str(), L"Nearest Point Result", MB_OK | MB_ICONINFORMATION);
+            // Prepend to summary and repaint
+            g_summary = oss.str() + L"\r\n\r\n" + g_summary;
+            InvalidateRect(hWnd, nullptr, TRUE);
         }
         break;
+        case IDM_SPHEREMESH:
+        {
+            if (g_kdtree.empty()) {
+                MessageBoxW(hWnd, L"No mesh loaded. Use 'Load OBJ...' first.", L"Sphere-Mesh", MB_OK | MB_ICONINFORMATION);
+                break;
+            }
+            double cx = 0, cy = 0, cz = 0, r = 1;
+            if (!PromptDouble(hWnd, L"Sphere - Mesh", L"Center X:", cx)) break;
+            if (!PromptDouble(hWnd, L"Sphere - Mesh", L"Center Y:", cy)) break;
+            if (!PromptDouble(hWnd, L"Sphere - Mesh", L"Center Z:", cz)) break;
+            if (!PromptDouble(hWnd, L"Sphere - Mesh", L"Radius:", r)) break;
+            auto t0 = std::chrono::steady_clock::now();
+            const bool hit = SphereIntersectsMeshKDRefined(cx, cy, cz, r);
+            auto t1 = std::chrono::steady_clock::now();
+            const auto us = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
+            std::wostringstream oss;
+            oss.setf(std::ios::fixed, std::ios::floatfield);
+            oss << (hit ? L"INTERSECT" : L"DISJOINT") << L"\r\nTime: " << us << L" us\r\n"
+                << L"Vertices: " << g_points.size() << L", Triangles: " << g_tris.size();
+            MessageBoxW(hWnd, oss.str().c_str(), L"Sphere - Mesh Result", MB_OK | MB_ICONINFORMATION);
+            g_summary = oss.str() + L"\r\n\r\n" + g_summary;
+            InvalidateRect(hWnd, nullptr, TRUE);
+        }
+        break;
+        case IDM_SETTRANSFORM:
+        {
+            double tx = 0, ty = 0, tz = 0, yawZ = 0, pitchY = 0, rollX = 0, s = 1;
+            if (!PromptDouble(hWnd, L"Set Transform", L"Translate X:", tx)) break;
+            if (!PromptDouble(hWnd, L"Set Transform", L"Translate Y:", ty)) break;
+            if (!PromptDouble(hWnd, L"Set Transform", L"Translate Z:", tz)) break;
+            if (!PromptDouble(hWnd, L"Set Transform", L"Yaw Z (deg):", yawZ)) break;
+            if (!PromptDouble(hWnd, L"Set Transform", L"Pitch Y (deg):", pitchY)) break;
+            if (!PromptDouble(hWnd, L"Set Transform", L"Roll X (deg):", rollX)) break;
+            if (!PromptDouble(hWnd, L"Set Transform", L"Uniform Scale:", s)) break;
+            XfSetTranslationRotationUniformScaleEuler(g_modelXf, tx, ty, tz, rollX, pitchY, yawZ, s);
+            UpdateSummaryText();
+            InvalidateRect(hWnd, nullptr, TRUE);
+        }
+        break;
+        case IDM_EXIT:
+            DestroyWindow(hWnd);
+            break;
+        default:
+            return DefWindowProc(hWnd, message, wParam, lParam);
+        }
+    }
+    break;
+    case WM_PAINT:
+    {
+        PAINTSTRUCT ps;
+        HDC hdc = BeginPaint(hWnd, &ps);
+        // Render summary text with the loaded point count and coordinates.
+        RECT rc{};
+        GetClientRect(hWnd, &rc);
+        DrawTextW(hdc,
+            g_summary.c_str(),
+            static_cast<int>(g_summary.size()),
+            &rc,
+            DT_LEFT | DT_TOP | DT_NOPREFIX | DT_WORDBREAK);
+        EndPaint(hWnd, &ps);
+    }
+    break;
     case WM_DESTROY:
         PostQuitMessage(0);
         break;
@@ -363,7 +376,7 @@ INT_PTR CALLBACK AddNumbersDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARA
         {
         case IDOK:
         {
-            wchar_t bufA[64] = {0}, bufB[64] = {0};
+            wchar_t bufA[64] = { 0 }, bufB[64] = { 0 };
             GetDlgItemTextW(hDlg, IDC_EDIT_A, bufA, 63);
             GetDlgItemTextW(hDlg, IDC_EDIT_B, bufB, 63);
             wchar_t* endA = nullptr; wchar_t* endB = nullptr;
@@ -424,7 +437,7 @@ static void BuildKDTreeFromPoints()
 // Show a file-open dialog filtered to .obj files.
 static std::optional<std::filesystem::path> ShowOpenObjDialog(HWND owner)
 {
-    wchar_t fileBuf[MAX_PATH] = {0};
+    wchar_t fileBuf[MAX_PATH] = { 0 };
     OPENFILENAMEW ofn{};
     ofn.lStructSize = sizeof(ofn);
     ofn.hwndOwner = owner;
@@ -435,7 +448,7 @@ static std::optional<std::filesystem::path> ShowOpenObjDialog(HWND owner)
     ofn.lpstrTitle = L"Select an OBJ file";
     if (GetOpenFileNameW(&ofn))
     {
-        return std::filesystem::path{fileBuf};
+        return std::filesystem::path{ fileBuf };
     }
     return std::nullopt;
 }
@@ -444,41 +457,88 @@ static std::optional<std::filesystem::path> ShowOpenObjDialog(HWND owner)
 static void XfSetIdentity(Transform4x4& t)
 {
     for (int i = 0; i < 16; ++i) t.m[i] = t.inv[i] = 0.0;
-    t.m[0]=t.m[5]=t.m[10]=t.m[15]=1.0;
-    t.inv[0]=t.inv[5]=t.inv[10]=t.inv[15]=1.0;
+    t.m[0] = t.m[5] = t.m[10] = t.m[15] = 1.0;
+    t.inv[0] = t.inv[5] = t.inv[10] = t.inv[15] = 1.0;
 }
-static void XfSetTranslationUniformScale(Transform4x4& t, double tx,double ty,double tz,double s)
+static void XfSetTranslationUniformScale(Transform4x4& t, double tx, double ty, double tz, double s)
 {
     if (s == 0.0) s = 1.0;
     for (int i = 0; i < 16; ++i) t.m[i] = t.inv[i] = 0.0;
     // m = S then T: x_world = s*x + t
-    t.m[0]=t.m[5]=t.m[10]=s; t.m[15]=1.0; t.m[3]=tx; t.m[7]=ty; t.m[11]=tz;
+    t.m[0] = t.m[5] = t.m[10] = s; t.m[15] = 1.0; t.m[3] = tx; t.m[7] = ty; t.m[11] = tz;
     // inv: x_model = (x_world - t) / s
-    const double is = 1.0/s;
-    t.inv[0]=t.inv[5]=t.inv[10]=is; t.inv[15]=1.0; t.inv[3]=-tx*is; t.inv[7]=-ty*is; t.inv[11]=-tz*is;
+    const double is = 1.0 / s;
+    t.inv[0] = t.inv[5] = t.inv[10] = is; t.inv[15] = 1.0; t.inv[3] = -tx * is; t.inv[7] = -ty * is; t.inv[11] = -tz * is;
+}
+
+static inline double Deg2Rad(double d) { return d * 3.14159265358979323846 / 180.0; }
+
+// Set transform with translation T=(tx,ty,tz), Euler ZYX (yaw Z, pitch Y, roll X) in degrees, and uniform scale s.
+// Row-major matrices; apply as x_world = (s * Rzyx) * x_model + T.
+static void XfSetTranslationRotationUniformScaleEuler(Transform4x4& t, double tx, double ty, double tz,
+    double rx_deg, double ry_deg, double rz_deg, double s)
+{
+    if (s == 0.0) s = 1.0;
+    const double cx = std::cos(Deg2Rad(rx_deg)), sx = std::sin(Deg2Rad(rx_deg));
+    const double cy = std::cos(Deg2Rad(ry_deg)), sy = std::sin(Deg2Rad(ry_deg));
+    const double cz = std::cos(Deg2Rad(rz_deg)), sz = std::sin(Deg2Rad(rz_deg));
+    // R = Rz * Ry * Rx (ZYX yaw-pitch-roll)
+    const double r00 = cy * cz;
+    const double r01 = cz * sx * sy - cx * sz;
+    const double r02 = sx * sz + cx * cz * sy;
+    const double r10 = cy * sz;
+    const double r11 = cx * cz + sx * sy * sz;
+    const double r12 = cx * sy * sz - cz * sx;
+    const double r20 = -sy;
+    const double r21 = cy * sx;
+    const double r22 = cx * cy;
+
+    const double s00 = s * r00, s01 = s * r01, s02 = s * r02;
+    const double s10 = s * r10, s11 = s * r11, s12 = s * r12;
+    const double s20 = s * r20, s21 = s * r21, s22 = s * r22;
+
+    for (int i = 0; i < 16; ++i) t.m[i] = t.inv[i] = 0.0;
+    t.m[0] = s00; t.m[1] = s01; t.m[2] = s02; t.m[3] = tx;
+    t.m[4] = s10; t.m[5] = s11; t.m[6] = s12; t.m[7] = ty;
+    t.m[8] = s20; t.m[9] = s21; t.m[10] = s22; t.m[11] = tz;
+    t.m[15] = 1.0;
+
+    const double is = 1.0 / s;
+    // inv linear = (1/s) * R^T (since R is orthonormal)
+    const double il00 = is * r00, il01 = is * r10, il02 = is * r20;
+    const double il10 = is * r01, il11 = is * r11, il12 = is * r21;
+    const double il20 = is * r02, il21 = is * r12, il22 = is * r22;
+    t.inv[0] = il00; t.inv[1] = il10; t.inv[2] = il20;
+    t.inv[4] = il01; t.inv[5] = il11; t.inv[6] = il21;
+    t.inv[8] = il02; t.inv[9] = il12; t.inv[10] = il22;
+    t.inv[15] = 1.0;
+    // inv translation = -inv_linear * T
+    t.inv[3] = -(il00 * tx + il01 * ty + il02 * tz);
+    t.inv[7] = -(il10 * tx + il11 * ty + il12 * tz);
+    t.inv[11] = -(il20 * tx + il21 * ty + il22 * tz);
 }
 static Point3 XfApplyPointRowMajor(const double m[16], const Point3& p)
 {
-    const double x = m[0]*p.x + m[1]*p.y + m[2]*p.z + m[3];
-    const double y = m[4]*p.x + m[5]*p.y + m[6]*p.z + m[7];
-    const double z = m[8]*p.x + m[9]*p.y + m[10]*p.z + m[11];
+    const double x = m[0] * p.x + m[1] * p.y + m[2] * p.z + m[3];
+    const double y = m[4] * p.x + m[5] * p.y + m[6] * p.z + m[7];
+    const double z = m[8] * p.x + m[9] * p.y + m[10] * p.z + m[11];
     // assume affine w=1
     return Point3{ x, y, z };
 }
 static double XfMaxColumnNorm3x3(const double m[16])
 {
     // Column norms of the 3x3 linear part (row-major storage)
-    const double c0 = std::sqrt(m[0]*m[0] + m[4]*m[4] + m[8]*m[8]);
-    const double c1 = std::sqrt(m[1]*m[1] + m[5]*m[5] + m[9]*m[9]);
-    const double c2 = std::sqrt(m[2]*m[2] + m[6]*m[6] + m[10]*m[10]);
-    return std::max({c0,c1,c2});
+    const double c0 = std::sqrt(m[0] * m[0] + m[4] * m[4] + m[8] * m[8]);
+    const double c1 = std::sqrt(m[1] * m[1] + m[5] * m[5] + m[9] * m[9]);
+    const double c2 = std::sqrt(m[2] * m[2] + m[6] * m[6] + m[10] * m[10]);
+    return std::max({ c0,c1,c2 });
 }
 
 // OBJ parser: loads vertex positions (v) and faces (f). Faces are triangulated via fan method.
 static bool LoadOBJ(const std::filesystem::path& path,
-                    std::vector<Point3>& outPts,
-                    std::vector<Triangle>& outTris,
-                    std::wstring& error)
+    std::vector<Point3>& outPts,
+    std::vector<Triangle>& outTris,
+    std::wstring& error)
 {
     outPts.clear();
     outTris.clear();
@@ -489,33 +549,34 @@ static bool LoadOBJ(const std::filesystem::path& path,
         return false;
     }
     auto parse_index = [](const std::string& tok, size_t vcount) -> std::optional<int>
-    {
-        // Extract the vertex index before first '/'
-        size_t slash = tok.find('/');
-        std::string s = tok.substr(0, slash);
-        if (s.empty()) return std::nullopt;
-        char* endp = nullptr;
-        long idx = strtol(s.c_str(), &endp, 10);
-        if (endp == s.c_str()) return std::nullopt;
-        // OBJ: positive indices are 1-based; negative are relative to end
-        long actual = 0;
-        if (idx > 0) actual = idx; else actual = (long)vcount + idx + 1;
-        if (actual < 1 || actual > (long)vcount) return std::nullopt;
-        return static_cast<int>(actual - 1); // to 0-based
-    };
+        {
+            // Extract the vertex index before first '/'
+            size_t slash = tok.find('/');
+            std::string s = tok.substr(0, slash);
+            if (s.empty()) return std::nullopt;
+            char* endp = nullptr;
+            long idx = strtol(s.c_str(), &endp, 10);
+            if (endp == s.c_str()) return std::nullopt;
+            // OBJ: positive indices are 1-based; negative are relative to end
+            long actual = 0;
+            if (idx > 0) actual = idx; else actual = (long)vcount + idx + 1;
+            if (actual < 1 || actual >(long)vcount) return std::nullopt;
+            return static_cast<int>(actual - 1); // to 0-based
+        };
 
     std::string line;
     while (std::getline(in, line))
     {
         // trim leading spaces
-        size_t i = 0; while (i < line.size() && (line[i]==' '||line[i]=='\t')) ++i; if (i>=line.size()) continue;
+        size_t i = 0; while (i < line.size() && (line[i] == ' ' || line[i] == '\t')) ++i; if (i >= line.size()) continue;
         if (line[i] == 'v') {
             ++i;
             if (i < line.size() && (line[i] == 'n' || line[i] == 't')) continue; // skip vn/vt
             if (i < line.size() && !(line[i] == ' ' || line[i] == '\t')) continue; // require whitespace after 'v'
-            double x=0,y=0,z=0; std::istringstream iss(line.substr(i));
+            double x = 0, y = 0, z = 0; std::istringstream iss(line.substr(i));
             if (iss >> x >> y >> z) outPts.push_back(Point3{ x,y,z });
-        } else if (line[i] == 'f') {
+        }
+        else if (line[i] == 'f') {
             ++i; if (i >= line.size()) continue;
             // tokenise remaining line by whitespace
             std::vector<int> poly;
@@ -527,7 +588,7 @@ static bool LoadOBJ(const std::filesystem::path& path,
             }
             if (poly.size() < 3) continue;
             for (size_t k = 2; k < poly.size(); ++k) {
-                outTris.push_back(Triangle{ poly[0], poly[k-1], poly[k] });
+                outTris.push_back(Triangle{ poly[0], poly[k - 1], poly[k] });
             }
         }
     }
@@ -543,7 +604,7 @@ static bool LoadOBJ(const std::filesystem::path& path,
 static inline double Distance(const Point3& a, const Point3& b)
 {
     const double dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
-    return std::sqrt(dx*dx + dy*dy + dz*dz);
+    return std::sqrt(dx * dx + dy * dy + dz * dz);
 }
 
 static void BuildAdjacencyAndEdgeStats()
@@ -552,14 +613,14 @@ static void BuildAdjacencyAndEdgeStats()
     g_maxEdgeLen = 0.0;
     for (size_t ti = 0; ti < g_tris.size(); ++ti) {
         const auto& t = g_tris[ti];
-        if (t.i0<0 || t.i1<0 || t.i2<0 ||
+        if (t.i0 < 0 || t.i1 < 0 || t.i2 < 0 ||
             t.i0 >= (int)g_points.size() || t.i1 >= (int)g_points.size() || t.i2 >= (int)g_points.size()) {
             continue; // ignore invalid triangles defensively
         }
         g_vertexToTris[t.i0].push_back((int)ti);
         g_vertexToTris[t.i1].push_back((int)ti);
         g_vertexToTris[t.i2].push_back((int)ti);
-        const auto& a=g_points[t.i0]; const auto& b=g_points[t.i1]; const auto& c=g_points[t.i2];
+        const auto& a = g_points[t.i0]; const auto& b = g_points[t.i1]; const auto& c = g_points[t.i2];
         g_maxEdgeLen = std::max({ g_maxEdgeLen, Distance(a,b), Distance(b,c), Distance(c,a) });
     }
 }
@@ -567,52 +628,52 @@ static void BuildAdjacencyAndEdgeStats()
 static double DistancePointTriangle(const Point3& p, const Point3& a, const Point3& b, const Point3& c)
 {
     // Real-Time Collision Detection, Christer Ericson, closest point on triangle
-    auto dot = [](double ax,double ay,double az,double bx,double by,double bz){ return ax*bx+ay*by+az*bz; };
-    auto sub = [](const Point3& u,const Point3& v){ return Point3{u.x-v.x,u.y-v.y,u.z-v.z}; };
-    const Point3 ab = sub(b,a);
-    const Point3 ac = sub(c,a);
-    const Point3 ap = sub(p,a);
-    double d1 = dot(ab.x,ab.y,ab.z, ap.x,ap.y,ap.z);
-    double d2 = dot(ac.x,ac.y,ac.z, ap.x,ap.y,ap.z);
-    if (d1 <= 0.0 && d2 <= 0.0) return Distance(p,a); // barycentric (1,0,0)
+    auto dot = [](double ax, double ay, double az, double bx, double by, double bz) { return ax * bx + ay * by + az * bz; };
+    auto sub = [](const Point3& u, const Point3& v) { return Point3{ u.x - v.x,u.y - v.y,u.z - v.z }; };
+    const Point3 ab = sub(b, a);
+    const Point3 ac = sub(c, a);
+    const Point3 ap = sub(p, a);
+    double d1 = dot(ab.x, ab.y, ab.z, ap.x, ap.y, ap.z);
+    double d2 = dot(ac.x, ac.y, ac.z, ap.x, ap.y, ap.z);
+    if (d1 <= 0.0 && d2 <= 0.0) return Distance(p, a); // barycentric (1,0,0)
 
-    const Point3 bp = sub(p,b);
-    double d3 = dot(ab.x,ab.y,ab.z, bp.x,bp.y,bp.z);
-    double d4 = dot(ac.x,ac.y,ac.z, bp.x,bp.y,bp.z);
-    if (d3 >= 0.0 && d4 <= d3) return Distance(p,b); // barycentric (0,1,0)
+    const Point3 bp = sub(p, b);
+    double d3 = dot(ab.x, ab.y, ab.z, bp.x, bp.y, bp.z);
+    double d4 = dot(ac.x, ac.y, ac.z, bp.x, bp.y, bp.z);
+    if (d3 >= 0.0 && d4 <= d3) return Distance(p, b); // barycentric (0,1,0)
 
-    double vc = d1*d4 - d3*d2;
+    double vc = d1 * d4 - d3 * d2;
     if (vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0) {
         double v = d1 / (d1 - d3);
-        Point3 proj{ a.x + v*ab.x, a.y + v*ab.y, a.z + v*ab.z };
+        Point3 proj{ a.x + v * ab.x, a.y + v * ab.y, a.z + v * ab.z };
         return Distance(p, proj);
     }
 
-    const Point3 cp = sub(p,c);
-    double d5 = dot(ab.x,ab.y,ab.z, cp.x,cp.y,cp.z);
-    double d6 = dot(ac.x,ac.y,ac.z, cp.x,cp.y,cp.z);
-    if (d6 >= 0.0 && d5 <= d6) return Distance(p,c); // barycentric (0,0,1)
+    const Point3 cp = sub(p, c);
+    double d5 = dot(ab.x, ab.y, ab.z, cp.x, cp.y, cp.z);
+    double d6 = dot(ac.x, ac.y, ac.z, cp.x, cp.y, cp.z);
+    if (d6 >= 0.0 && d5 <= d6) return Distance(p, c); // barycentric (0,0,1)
 
-    double vb = d5*d2 - d1*d6;
+    double vb = d5 * d2 - d1 * d6;
     if (vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0) {
         double w = d2 / (d2 - d6);
-        Point3 proj{ a.x + w*ac.x, a.y + w*ac.y, a.z + w*ac.z };
+        Point3 proj{ a.x + w * ac.x, a.y + w * ac.y, a.z + w * ac.z };
         return Distance(p, proj);
     }
 
-    double va = d3*d6 - d5*d4;
+    double va = d3 * d6 - d5 * d4;
     if (va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0) {
-        Point3 bc{ b.x + ((d4 - d3)/((d4 - d3) + (d5 - d6))) * (c.x - b.x),
-                   b.y + ((d4 - d3)/((d4 - d3) + (d5 - d6))) * (c.y - b.y),
-                   b.z + ((d4 - d3)/((d4 - d3) + (d5 - d6))) * (c.z - b.z) };
+        Point3 bc{ b.x + ((d4 - d3) / ((d4 - d3) + (d5 - d6))) * (c.x - b.x),
+                   b.y + ((d4 - d3) / ((d4 - d3) + (d5 - d6))) * (c.y - b.y),
+                   b.z + ((d4 - d3) / ((d4 - d3) + (d5 - d6))) * (c.z - b.z) };
         return Distance(p, bc);
     }
 
     // Inside face region: project to plane using barycentric coordinates
-    double denom = (ab.x*ab.x+ab.y*ab.y+ab.z*ab.z) * (ac.x*ac.x+ac.y*ac.y+ac.z*ac.z) - (ab.x*ac.x+ab.y*ac.y+ab.z*ac.z)*(ab.x*ac.x+ab.y*ac.y+ab.z*ac.z);
-    double s = ( (ab.x*ap.x+ab.y*ap.y+ab.z*ap.z) * (ac.x*ac.x+ac.y*ac.y+ac.z*ac.z) - (ac.x*ap.x+ac.y*ap.y+ac.z*ap.z) * (ab.x*ac.x+ab.y*ac.y+ab.z*ac.z) ) / denom;
-    double t = ( (ac.x*ap.x+ac.y*ap.y+ac.z*ap.z) * (ab.x*ab.x+ab.y*ab.y+ab.z*ab.z) - (ab.x*ap.x+ab.y*ap.y+ab.z*ap.z) * (ab.x*ac.x+ab.y*ac.y+ab.z*ac.z) ) / denom;
-    Point3 proj{ a.x + s*ab.x + t*ac.x, a.y + s*ab.y + t*ac.y, a.z + s*ab.z + t*ac.z };
+    double denom = (ab.x * ab.x + ab.y * ab.y + ab.z * ab.z) * (ac.x * ac.x + ac.y * ac.y + ac.z * ac.z) - (ab.x * ac.x + ab.y * ac.y + ab.z * ac.z) * (ab.x * ac.x + ab.y * ac.y + ab.z * ac.z);
+    double s = ((ab.x * ap.x + ab.y * ap.y + ab.z * ap.z) * (ac.x * ac.x + ac.y * ac.y + ac.z * ac.z) - (ac.x * ap.x + ac.y * ap.y + ac.z * ap.z) * (ab.x * ac.x + ab.y * ac.y + ab.z * ac.z)) / denom;
+    double t = ((ac.x * ap.x + ac.y * ap.y + ac.z * ap.z) * (ab.x * ab.x + ab.y * ab.y + ab.z * ab.z) - (ab.x * ap.x + ab.y * ap.y + ab.z * ap.z) * (ab.x * ac.x + ab.y * ac.y + ab.z * ac.z)) / denom;
+    Point3 proj{ a.x + s * ab.x + t * ac.x, a.y + s * ab.y + t * ac.y, a.z + s * ab.z + t * ac.z };
     return Distance(p, proj);
 }
 
@@ -621,7 +682,7 @@ static bool SphereIntersectsMeshKDRefined(double cx, double cy, double cz, doubl
     if (r < 0.0) r = 0.0;
     if (g_kdtree.empty()) return false;
     // Transform world-space center into model space
-    Point3 cw{cx,cy,cz};
+    Point3 cw{ cx,cy,cz };
     Point3 cm = XfApplyPointRowMajor(g_modelXf.inv, cw);
     // Conservative local radius under world->model linear map
     const double smax = XfMaxColumnNorm3x3(g_modelXf.inv);
@@ -660,24 +721,24 @@ static bool SphereIntersectsMeshKDRefined(double cx, double cy, double cz, doubl
 // ---------- Runtime single-input dialog implementation ----------
 namespace {
 #pragma pack(push, 1)
-struct DLGTEMPLATE_WRITER {
-    HGLOBAL hgl = nullptr;
-    BYTE* base = nullptr;
-    BYTE* p = nullptr;
-    bool init(size_t bytes) {
-        hgl = GlobalAlloc(GMEM_ZEROINIT, bytes);
-        if (!hgl) return false;
-        base = (BYTE*)GlobalLock(hgl);
-        p = base;
-        return base != nullptr;
-    }
-    void fini() { if (base) GlobalUnlock(hgl); }
-    void align_dword() { ULONG_PTR n = (ULONG_PTR)p; n = (n + 3) & ~3; p = (BYTE*)n; }
-    template <class T> T* write(const T& v) { T* q = (T*)p; *q = v; p += sizeof(T); return q; }
-    void write_word(WORD v) { write(v); }
-    void write_dword(DWORD v) { write(v); }
-    void write_wstr(const wchar_t* s) { while (*s) { write_word((WORD)*s++); } write_word(0); }
-};
+    struct DLGTEMPLATE_WRITER {
+        HGLOBAL hgl = nullptr;
+        BYTE* base = nullptr;
+        BYTE* p = nullptr;
+        bool init(size_t bytes) {
+            hgl = GlobalAlloc(GMEM_ZEROINIT, bytes);
+            if (!hgl) return false;
+            base = (BYTE*)GlobalLock(hgl);
+            p = base;
+            return base != nullptr;
+        }
+        void fini() { if (base) GlobalUnlock(hgl); }
+        void align_dword() { ULONG_PTR n = (ULONG_PTR)p; n = (n + 3) & ~3; p = (BYTE*)n; }
+        template <class T> T* write(const T& v) { T* q = (T*)p; *q = v; p += sizeof(T); return q; }
+        void write_word(WORD v) { write(v); }
+        void write_dword(DWORD v) { write(v); }
+        void write_wstr(const wchar_t* s) { while (*s) { write_word((WORD)*s++); } write_word(0); }
+    };
 #pragma pack(pop)
 }
 
@@ -697,7 +758,8 @@ static INT_PTR CALLBACK InputDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM 
         HWND hEdit = GetDlgItem(hDlg, IDC_IN_EDIT);
         SetFocus(hEdit);
         return FALSE; // we set focus
-    } else if (msg == WM_COMMAND) {
+    }
+    else if (msg == WM_COMMAND) {
         switch (LOWORD(wParam)) {
         case IDOK: {
             auto* st = reinterpret_cast<InputState*>(GetWindowLongPtrW(hDlg, GWLP_USERDATA));
