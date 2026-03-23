@@ -15,6 +15,7 @@ using System.Windows.Input;
 using Microsoft.Win32;
 using Assimp;
 using VB = Microsoft.VisualBasic;
+using SDX = SharpDX;
 
 namespace GML_WPF
 {
@@ -29,6 +30,9 @@ namespace GML_WPF
             public int[] Indices = Array.Empty<int>();
             public Transform3DGroup Transform = new Transform3DGroup();
             public Hx.MeshGeometryModel3D? Model; // visualization hook
+            // Cached local-space AABB (min/max)
+            public Vector3 LocalMin;
+            public Vector3 LocalMax;
         }
 
         private readonly Hx.PerspectiveCamera _camera = new Hx.PerspectiveCamera
@@ -155,6 +159,8 @@ namespace GML_WPF
                     posList.Add(new Vector3(v.X, v.Y, v.Z));
                 }
                 tri.Positions = posList.ToArray();
+                // Compute local-space AABB
+                ComputeLocalAabb(tri.Positions, out tri.LocalMin, out tri.LocalMax);
                 var idx = new List<int>(mesh.FaceCount * 3);
                 foreach (var f in mesh.Faces)
                 {
@@ -279,6 +285,9 @@ namespace GML_WPF
             var tree = EnsureNativeTree();
             if (tree == IntPtr.Zero) { MessageBox.Show(this, "No points to test."); return; }
             bool hit = GML.Interop.Gml.KDTreeSphereIntersects(tree, cx, cy, cz, r);
+            // Also treat model as solid: if sphere center is inside the mesh, count as intersection
+            if (!hit && IsPointInsideAnyMesh(cx, cy, cz)) hit = true;
+            ShowSphereOverlay(cx, cy, cz, r, hit);
             MessageBox.Show(this, hit ? "Intersection: YES" : "Intersection: NO", "Sphere vs KDTree");
         }
 
@@ -295,6 +304,20 @@ namespace GML_WPF
             var tree = EnsureNativeTree();
             if (tree == IntPtr.Zero) { MessageBox.Show(this, "No points to test."); return; }
             bool hit = GML.Interop.Gml.KDTreeCylinderIntersects(tree, x0, y0, z0, x1, y1, z1, r);
+            // Solid model: if cylinder axis midpoint is inside mesh, count as intersection
+            if (!hit)
+            {
+                double mx = 0.5 * (x0 + x1), my = 0.5 * (y0 + y1), mz = 0.5 * (z0 + z1);
+                if (IsPointInsideAnyMesh(mx, my, mz)) hit = true;
+            }
+            // Fallback: robust surface test — treat cylinder as radius around its axis segment and
+            // check triangle-surface proximity. If any triangle gets within r of the axis (including direct
+            // segment-triangle intersection), report intersection.
+            if (!hit && CylinderIntersectsMesh(new Vector3((float)x0,(float)y0,(float)z0), new Vector3((float)x1,(float)y1,(float)z1), (float)r))
+            {
+                hit = true;
+            }
+            ShowCylinderOverlay(x0, y0, z0, x1, y1, z1, r, hit);
             MessageBox.Show(this, hit ? "Intersection: YES" : "Intersection: NO", "Cylinder vs KDTree");
         }
 
@@ -311,6 +334,13 @@ namespace GML_WPF
             var tree = EnsureNativeTree();
             if (tree == IntPtr.Zero) { MessageBox.Show(this, "No points to test."); return; }
             bool hit = GML.Interop.Gml.KDTreeConeIntersects(tree, x0, y0, z0, x1, y1, z1, r);
+            // Solid model: test midpoint along axis as interior sample
+            if (!hit)
+            {
+                double mx = 0.5 * (x0 + x1), my = 0.5 * (y0 + y1), mz = 0.5 * (z0 + z1);
+                if (IsPointInsideAnyMesh(mx, my, mz)) hit = true;
+            }
+            ShowConeOverlay(x0, y0, z0, x1, y1, z1, r, hit);
             MessageBox.Show(this, hit ? "Intersection: YES" : "Intersection: NO", "Cone vs KDTree");
         }
 
@@ -378,6 +408,58 @@ namespace GML_WPF
         }
         private void MarkKdDirty() { _kdDirty = true; }
 
+        private readonly List<Hx.MeshGeometryModel3D> _overlays = new();
+        private void ClearOverlays()
+        {
+            foreach (var o in _overlays) View3D.Items.Remove(o);
+            _overlays.Clear();
+        }
+
+        private void ShowSphereOverlay(double cx, double cy, double cz, double r, bool hit)
+        {
+            ClearOverlays();
+            var geom = BuildSphere((float)cx, (float)cy, (float)cz, (float)r, 32, 16);
+            var model = new Hx.MeshGeometryModel3D
+            {
+                Geometry = geom,
+                Material = Hx.PhongMaterials.Gray,
+                RenderWireframe = true,
+                WireframeColor = hit ? Colors.Lime : Colors.Red
+            };
+            View3D.Items.Add(model);
+            _overlays.Add(model);
+        }
+
+        private void ShowCylinderOverlay(double x0, double y0, double z0, double x1, double y1, double z1, double r, bool hit)
+        {
+            ClearOverlays();
+            var geom = BuildCylinder(new Vector3((float)x0, (float)y0, (float)z0), new Vector3((float)x1, (float)y1, (float)z1), (float)r, 36);
+            var model = new Hx.MeshGeometryModel3D
+            {
+                Geometry = geom,
+                Material = Hx.PhongMaterials.Gray,
+                RenderWireframe = true,
+                WireframeColor = hit ? Colors.Lime : Colors.Red
+            };
+            View3D.Items.Add(model);
+            _overlays.Add(model);
+        }
+
+        private void ShowConeOverlay(double x0, double y0, double z0, double x1, double y1, double z1, double r, bool hit)
+        {
+            ClearOverlays();
+            var geom = BuildCone(new Vector3((float)x0, (float)y0, (float)z0), new Vector3((float)x1, (float)y1, (float)z1), (float)r, 36);
+            var model = new Hx.MeshGeometryModel3D
+            {
+                Geometry = geom,
+                Material = Hx.PhongMaterials.Gray,
+                RenderWireframe = true,
+                WireframeColor = hit ? Colors.Lime : Colors.Red
+            };
+            View3D.Items.Add(model);
+            _overlays.Add(model);
+        }
+
         private IntPtr EnsureNativeTree()
         {
             if (!_kdDirty && _kdTree != IntPtr.Zero) return _kdTree;
@@ -389,5 +471,383 @@ namespace GML_WPF
             _kdDirty = false;
             return _kdTree;
         }
+
+        // ==== Simple tessellation helpers for overlays ====
+        private static HxSharpDX.MeshGeometry3D BuildSphere(float cx, float cy, float cz, float r, int thetaDiv, int phiDiv)
+        {
+            var positions = new HT.Vector3Collection();
+            var indices = new HT.IntCollection();
+            for (int pi = 0; pi <= phiDiv; pi++)
+            {
+                float v = (float)pi / phiDiv; // 0..1
+                float phi = v * (float)Math.PI; // 0..PI
+                float y = (float)Math.Cos(phi);
+                float sr = (float)Math.Sin(phi);
+                for (int ti = 0; ti <= thetaDiv; ti++)
+                {
+                    float u = (float)ti / thetaDiv; // 0..1
+                    float theta = u * 2f * (float)Math.PI;
+                    float x = (float)Math.Cos(theta) * sr;
+                    float z = (float)Math.Sin(theta) * sr;
+                    positions.Add(new Vector3(cx + r * x, cy + r * y, cz + r * z));
+                }
+            }
+            int stride = thetaDiv + 1;
+            for (int pi = 0; pi < phiDiv; pi++)
+            {
+                for (int ti = 0; ti < thetaDiv; ti++)
+                {
+                    int i0 = pi * stride + ti;
+                    int i1 = i0 + 1;
+                    int i2 = i0 + stride;
+                    int i3 = i2 + 1;
+                    indices.Add(i0); indices.Add(i2); indices.Add(i1);
+                    indices.Add(i1); indices.Add(i2); indices.Add(i3);
+                }
+            }
+            return new HxSharpDX.MeshGeometry3D { Positions = positions, Indices = indices };
+        }
+
+        private static Vector3 Normalize(Vector3 v)
+        {
+            float len = (float)Math.Sqrt(v.X * v.X + v.Y * v.Y + v.Z * v.Z);
+            return len > 1e-6f ? new Vector3(v.X / len, v.Y / len, v.Z / len) : new Vector3(0, 0, 1);
+        }
+
+        private static void OrthonormalBasis(Vector3 n, out Vector3 t, out Vector3 b)
+        {
+            n = Normalize(n);
+            Vector3 up = Math.Abs(n.Z) < 0.9f ? new Vector3(0, 0, 1) : new Vector3(0, 1, 0);
+            t = Normalize(new Vector3(n.Y * up.Z - n.Z * up.Y, n.Z * up.X - n.X * up.Z, n.X * up.Y - n.Y * up.X));
+            b = new Vector3(n.Y * t.Z - n.Z * t.Y, n.Z * t.X - n.X * t.Z, n.X * t.Y - n.Y * t.X);
+        }
+
+        private static HxSharpDX.MeshGeometry3D BuildCylinder(Vector3 p0, Vector3 p1, float r, int thetaDiv)
+        {
+            var positions = new HT.Vector3Collection();
+            var indices = new HT.IntCollection();
+            var axis = new Vector3(p1.X - p0.X, p1.Y - p0.Y, p1.Z - p0.Z);
+            OrthonormalBasis(axis, out var t, out var b);
+            // two rings
+            var bottomIdx = new List<int>(thetaDiv);
+            var topIdx = new List<int>(thetaDiv);
+            for (int i = 0; i < thetaDiv; i++)
+            {
+                float ang = i * 2f * (float)Math.PI / thetaDiv;
+                var dir = new Vector3(t.X * (float)Math.Cos(ang) + b.X * (float)Math.Sin(ang),
+                                       t.Y * (float)Math.Cos(ang) + b.Y * (float)Math.Sin(ang),
+                                       t.Z * (float)Math.Cos(ang) + b.Z * (float)Math.Sin(ang));
+                var pb = new Vector3(p0.X + r * dir.X, p0.Y + r * dir.Y, p0.Z + r * dir.Z);
+                var pt = new Vector3(p1.X + r * dir.X, p1.Y + r * dir.Y, p1.Z + r * dir.Z);
+                bottomIdx.Add(positions.Count);
+                positions.Add(pb);
+                topIdx.Add(positions.Count);
+                positions.Add(pt);
+            }
+            for (int i = 0; i < thetaDiv; i++)
+            {
+                int i0 = bottomIdx[i];
+                int i1 = topIdx[i];
+                int i2 = bottomIdx[(i + 1) % thetaDiv];
+                int i3 = topIdx[(i + 1) % thetaDiv];
+                indices.Add(i0); indices.Add(i1); indices.Add(i2);
+                indices.Add(i1); indices.Add(i3); indices.Add(i2);
+            }
+            return new HxSharpDX.MeshGeometry3D { Positions = positions, Indices = indices };
+        }
+
+        private static HxSharpDX.MeshGeometry3D BuildCone(Vector3 apex, Vector3 baseCenter, float r, int thetaDiv)
+        {
+            var positions = new HT.Vector3Collection();
+            var indices = new HT.IntCollection();
+            int apexIndex = 0;
+            positions.Add(apex);
+            var axis = new Vector3(baseCenter.X - apex.X, baseCenter.Y - apex.Y, baseCenter.Z - apex.Z);
+            OrthonormalBasis(axis, out var t, out var b);
+            var ring = new List<int>(thetaDiv);
+            for (int i = 0; i < thetaDiv; i++)
+            {
+                float ang = i * 2f * (float)Math.PI / thetaDiv;
+                var dir = new Vector3(t.X * (float)Math.Cos(ang) + b.X * (float)Math.Sin(ang),
+                                       t.Y * (float)Math.Cos(ang) + b.Y * (float)Math.Sin(ang),
+                                       t.Z * (float)Math.Cos(ang) + b.Z * (float)Math.Sin(ang));
+                var p = new Vector3(baseCenter.X + r * dir.X, baseCenter.Y + r * dir.Y, baseCenter.Z + r * dir.Z);
+                ring.Add(positions.Count);
+                positions.Add(p);
+            }
+            for (int i = 0; i < thetaDiv; i++)
+            {
+                int i0 = ring[i];
+                int i1 = ring[(i + 1) % thetaDiv];
+                indices.Add(apexIndex); indices.Add(i0); indices.Add(i1);
+            }
+            return new HxSharpDX.MeshGeometry3D { Positions = positions, Indices = indices };
+        }
+
+        // ==== Solid test via ray casting against combined triangulations ====
+        private bool IsPointInsideAnyMesh(double x, double y, double z)
+        {
+            var origin = new System.Windows.Media.Media3D.Point3D(x, y, z);
+            var dir = new System.Windows.Media.Media3D.Vector3D(1, 0, 0); // +X ray
+            foreach (var t in _triangulations)
+            {
+                // AABB cull: skip if point is outside this mesh's world-space AABB
+                GetWorldAabb(t, out var wmin, out var wmax);
+                if (x < wmin.X || x > wmax.X || y < wmin.Y || y > wmax.Y || z < wmin.Z || z > wmax.Z)
+                    continue;
+                if (PointInMesh(origin, dir, t)) return true;
+            }
+            return false;
+        }
+
+        private static bool PointInMesh(System.Windows.Media.Media3D.Point3D p, System.Windows.Media.Media3D.Vector3D dir, Triangulation tri)
+        {
+            int hits = 0;
+            var mat = tri.Transform.Value;
+            var pos = tri.Positions;
+            var idx = tri.Indices;
+            // small epsilon shift to avoid starting exactly on triangles
+            var o = new System.Windows.Media.Media3D.Point3D(p.X + 1e-6, p.Y + 1e-6, p.Z + 1e-6);
+            for (int i = 0; i < idx.Length; i += 3)
+            {
+                var a = ToP3D(mat, pos[idx[i]]);
+                var b = ToP3D(mat, pos[idx[i + 1]]);
+                var c = ToP3D(mat, pos[idx[i + 2]]);
+                if (RayTriangleIntersect(o, dir, a, b, c)) hits++;
+            }
+            return (hits % 2) == 1;
+        }
+
+        private static System.Windows.Media.Media3D.Point3D ToP3D(System.Windows.Media.Media3D.Matrix3D m, Vector3 v)
+        {
+            var p = new System.Windows.Media.Media3D.Point3D(v.X, v.Y, v.Z);
+            return m.Transform(p);
+        }
+
+        private static void ComputeLocalAabb(IReadOnlyList<Vector3> positions, out Vector3 min, out Vector3 max)
+        {
+            if (positions.Count == 0) { min = max = new Vector3(0, 0, 0); return; }
+            float minX = positions[0].X, minY = positions[0].Y, minZ = positions[0].Z;
+            float maxX = minX, maxY = minY, maxZ = minZ;
+            for (int i = 1; i < positions.Count; i++)
+            {
+                var v = positions[i];
+                if (v.X < minX) minX = v.X; if (v.Y < minY) minY = v.Y; if (v.Z < minZ) minZ = v.Z;
+                if (v.X > maxX) maxX = v.X; if (v.Y > maxY) maxY = v.Y; if (v.Z > maxZ) maxZ = v.Z;
+            }
+            min = new Vector3(minX, minY, minZ);
+            max = new Vector3(maxX, maxY, maxZ);
+        }
+
+        private static void GetWorldAabb(Triangulation t, out Vector3 min, out Vector3 max)
+        {
+            // Transform axis-aligned box using center/extent method
+            var Lmin = t.LocalMin; var Lmax = t.LocalMax;
+            var center = new Vector3((Lmin.X + Lmax.X) * 0.5f, (Lmin.Y + Lmax.Y) * 0.5f, (Lmin.Z + Lmax.Z) * 0.5f);
+            var extent = new Vector3((Lmax.X - Lmin.X) * 0.5f, (Lmax.Y - Lmin.Y) * 0.5f, (Lmax.Z - Lmin.Z) * 0.5f);
+            var m = t.Transform.Value;
+            // rotation/scale part
+            float m11 = (float)m.M11, m12 = (float)m.M12, m13 = (float)m.M13;
+            float m21 = (float)m.M21, m22 = (float)m.M22, m23 = (float)m.M23;
+            float m31 = (float)m.M31, m32 = (float)m.M32, m33 = (float)m.M33;
+            // world center
+            var wc = m.Transform(new System.Windows.Media.Media3D.Point3D(center.X, center.Y, center.Z));
+            // world extents = |R| * extent
+            float ex = Math.Abs(m11) * extent.X + Math.Abs(m12) * extent.Y + Math.Abs(m13) * extent.Z;
+            float ey = Math.Abs(m21) * extent.X + Math.Abs(m22) * extent.Y + Math.Abs(m23) * extent.Z;
+            float ez = Math.Abs(m31) * extent.X + Math.Abs(m32) * extent.Y + Math.Abs(m33) * extent.Z;
+            min = new Vector3((float)wc.X - ex, (float)wc.Y - ey, (float)wc.Z - ez);
+            max = new Vector3((float)wc.X + ex, (float)wc.Y + ey, (float)wc.Z + ez);
+        }
+
+        private static bool AabbOverlaps(Vector3 aMin, Vector3 aMax, Vector3 bMin, Vector3 bMax)
+        {
+            if (aMax.X < bMin.X || aMin.X > bMax.X) return false;
+            if (aMax.Y < bMin.Y || aMin.Y > bMax.Y) return false;
+            if (aMax.Z < bMin.Z || aMin.Z > bMax.Z) return false;
+            return true;
+        }
+
+        private static bool RayTriangleIntersect(System.Windows.Media.Media3D.Point3D orig, System.Windows.Media.Media3D.Vector3D dir,
+                                                 System.Windows.Media.Media3D.Point3D a,
+                                                 System.Windows.Media.Media3D.Point3D b,
+                                                 System.Windows.Media.Media3D.Point3D c)
+        {
+            // Moller-Trumbore in double precision (ray)
+            double eps = 1e-9;
+            var edge1 = b - a; var edge2 = c - a;
+            var pvec = System.Windows.Media.Media3D.Vector3D.CrossProduct(dir, edge2);
+            double det = System.Windows.Media.Media3D.Vector3D.DotProduct(edge1, pvec);
+            if (Math.Abs(det) < eps) return false;
+            double invDet = 1.0 / det;
+            var tvec = orig - a;
+            double u = System.Windows.Media.Media3D.Vector3D.DotProduct(tvec, pvec) * invDet;
+            if (u < 0.0 || u > 1.0) return false;
+            var qvec = System.Windows.Media.Media3D.Vector3D.CrossProduct(tvec, edge1);
+            double v = System.Windows.Media.Media3D.Vector3D.DotProduct(dir, qvec) * invDet;
+            if (v < 0.0 || u + v > 1.0) return false;
+            double t = System.Windows.Media.Media3D.Vector3D.DotProduct(edge2, qvec) * invDet;
+            return t > eps; // intersection along +dir
+        }
+
+        private static bool SegmentTriangleIntersect(Vector3 p0, Vector3 p1, System.Windows.Media.Media3D.Point3D a, System.Windows.Media.Media3D.Point3D b, System.Windows.Media.Media3D.Point3D c)
+        {
+            var d = new System.Windows.Media.Media3D.Vector3D(p1.X - p0.X, p1.Y - p0.Y, p1.Z - p0.Z);
+            var o = new System.Windows.Media.Media3D.Point3D(p0.X, p0.Y, p0.Z);
+            // Ray test
+            double eps = 1e-9;
+            var edge1 = b - a; var edge2 = c - a;
+            var pvec = System.Windows.Media.Media3D.Vector3D.CrossProduct(d, edge2);
+            double det = System.Windows.Media.Media3D.Vector3D.DotProduct(edge1, pvec);
+            if (Math.Abs(det) < eps) return false;
+            double invDet = 1.0 / det;
+            var tvec = o - a;
+            double u = System.Windows.Media.Media3D.Vector3D.DotProduct(tvec, pvec) * invDet;
+            if (u < 0.0 || u > 1.0) return false;
+            var qvec = System.Windows.Media.Media3D.Vector3D.CrossProduct(tvec, edge1);
+            double v = System.Windows.Media.Media3D.Vector3D.DotProduct(d, qvec) * invDet;
+            if (v < 0.0 || u + v > 1.0) return false;
+            double t = System.Windows.Media.Media3D.Vector3D.DotProduct(edge2, qvec) * invDet;
+            return t > eps && t < 1.0 + eps; // within segment
+        }
+
+        private static double SegmentSegmentDistance(Vector3 p1, Vector3 q1, Vector3 p2, Vector3 q2)
+        {
+            // Returns minimal distance between two 3D segments
+            const float EPS = 1e-6f;
+            Vector3 d1 = new Vector3(q1.X - p1.X, q1.Y - p1.Y, q1.Z - p1.Z);
+            Vector3 d2 = new Vector3(q2.X - p2.X, q2.Y - p2.Y, q2.Z - p2.Z);
+            Vector3 r = new Vector3(p1.X - p2.X, p1.Y - p2.Y, p1.Z - p2.Z);
+            float a = Dot(d1, d1); // squared length of segment S1
+            float e = Dot(d2, d2); // squared length of segment S2
+            float f = Dot(d2, r);
+            float s, t;
+            if (a <= EPS && e <= EPS)
+            {
+                // both segments degenerate
+                return Len(new Vector3(p1.X - p2.X, p1.Y - p2.Y, p1.Z - p2.Z));
+            }
+            if (a <= EPS)
+            {
+                // first degenerate
+                s = 0; t = Clamp(f / e, 0, 1);
+            }
+            else
+            {
+                float c = Dot(d1, r);
+                if (e <= EPS)
+                {
+                    t = 0; s = Clamp(-c / a, 0, 1);
+                }
+                else
+                {
+                    float b = Dot(d1, d2);
+                    float denom = a * e - b * b;
+                    if (denom != 0)
+                        s = Clamp((b * f - c * e) / denom, 0, 1);
+                    else
+                        s = 0;
+                    t = (b * s + f) / e;
+                    if (t < 0) { t = 0; s = Clamp(-c / a, 0, 1); }
+                    else if (t > 1) { t = 1; s = Clamp((b - c) / a, 0, 1); }
+                }
+            }
+            Vector3 c1 = new Vector3(p1.X + s * d1.X, p1.Y + s * d1.Y, p1.Z + s * d1.Z);
+            Vector3 c2 = new Vector3(p2.X + t * d2.X, p2.Y + t * d2.Y, p2.Z + t * d2.Z);
+            return Len(new Vector3(c1.X - c2.X, c1.Y - c2.Y, c1.Z - c2.Z));
+        }
+
+        private static float Dot(Vector3 a, Vector3 b) => a.X * b.X + a.Y * b.Y + a.Z * b.Z;
+        private static float Len(Vector3 a) => (float)Math.Sqrt(a.X * a.X + a.Y * a.Y + a.Z * a.Z);
+        private static float Clamp(float x, float lo, float hi) => x < lo ? lo : (x > hi ? hi : x);
+
+        private bool CylinderIntersectsMesh(Vector3 p0, Vector3 p1, float r)
+        {
+            // Cylinder AABB for quick cull
+            var cmin = new Vector3(Math.Min(p0.X, p1.X) - r, Math.Min(p0.Y, p1.Y) - r, Math.Min(p0.Z, p1.Z) - r);
+            var cmax = new Vector3(Math.Max(p0.X, p1.X) + r, Math.Max(p0.Y, p1.Y) + r, Math.Max(p0.Z, p1.Z) + r);
+            // Check each triangle for proximity to the axis segment within radius r
+            foreach (var t in _triangulations)
+            {
+                // Per-triangulation world-space AABB cull
+                GetWorldAabb(t, out var wmin, out var wmax);
+                if (!AabbOverlaps(cmin, cmax, wmin, wmax)) continue;
+
+                var M = t.Transform.Value;
+                var pos = t.Positions; var idx = t.Indices;
+                for (int i = 0; i < idx.Length; i += 3)
+                {
+                    var a = ToP3D(M, pos[idx[i]]);
+                    var b = ToP3D(M, pos[idx[i + 1]]);
+                    var c = ToP3D(M, pos[idx[i + 2]]);
+                    // 1) Direct axis-segment to triangle intersection
+                    if (SegmentTriangleIntersect(p0, p1, a, b, c)) return true;
+                    // 2) Distance from axis segment to each triangle edge <= r
+                    var e0p0 = new Vector3((float)a.X, (float)a.Y, (float)a.Z);
+                    var e0p1 = new Vector3((float)b.X, (float)b.Y, (float)b.Z);
+                    var e1p0 = new Vector3((float)b.X, (float)b.Y, (float)b.Z);
+                    var e1p1 = new Vector3((float)c.X, (float)c.Y, (float)c.Z);
+                    var e2p0 = new Vector3((float)c.X, (float)c.Y, (float)c.Z);
+                    var e2p1 = new Vector3((float)a.X, (float)a.Y, (float)a.Z);
+                    if (SegmentSegmentDistance(p0, p1, e0p0, e0p1) <= r) return true;
+                    if (SegmentSegmentDistance(p0, p1, e1p0, e1p1) <= r) return true;
+                    if (SegmentSegmentDistance(p0, p1, e2p0, e2p1) <= r) return true;
+                    // 3) Distance from axis endpoints to triangle face <= r (covers cap intersections)
+                    if (PointTriangleDistance(new Vector3(p0.X, p0.Y, p0.Z), a, b, c) <= r) return true;
+                    if (PointTriangleDistance(new Vector3(p1.X, p1.Y, p1.Z), a, b, c) <= r) return true;
+                }
+            }
+            return false;
+        }
+
+        private static float PointTriangleDistance(Vector3 p, System.Windows.Media.Media3D.Point3D a,
+                                                   System.Windows.Media.Media3D.Point3D b,
+                                                   System.Windows.Media.Media3D.Point3D c)
+        {
+            // From "Real-Time Collision Detection" (Christer Ericson) style approach
+            var A = new Vector3((float)a.X, (float)a.Y, (float)a.Z);
+            var B = new Vector3((float)b.X, (float)b.Y, (float)b.Z);
+            var C = new Vector3((float)c.X, (float)c.Y, (float)c.Z);
+            // Check if P in vertex regions outside A/B/C
+            var ab = Sub(B, A); var ac = Sub(C, A); var ap = Sub(p, A);
+            float d1 = Dot(ab, ap); float d2 = Dot(ac, ap);
+            if (d1 <= 0 && d2 <= 0) return Len(ap);
+            var bp = Sub(p, B); float d3 = Dot(ab, bp); float d4 = Dot(ac, bp);
+            if (d3 >= 0 && d4 <= d3) return Len(bp);
+            var vc = d1 * d4 - d3 * d2;
+            if (vc <= 0 && d1 >= 0 && d2 <= 0)
+            {
+                float v = d1 / (d1 - d2);
+                var proj = Add(A, Mul(ab, v));
+                return Len(Sub(p, proj));
+            }
+            var cp = Sub(p, C); float d5 = Dot(ab, cp); float d6 = Dot(ac, cp);
+            if (d6 >= 0 && d5 <= d6) return Len(cp);
+            var vb = d5 * d2 - d1 * d6;
+            if (vb <= 0 && d2 >= 0 && d6 <= 0)
+            {
+                float w = d2 / (d2 - d6);
+                var proj = Add(A, Mul(ac, w));
+                return Len(Sub(p, proj));
+            }
+            var va = d3 * d6 - d5 * d4;
+            if (va <= 0 && (d4 - d3) >= 0 && (d5 - d6) >= 0)
+            {
+                var cb = Sub(C, B);
+                float w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+                var proj = Add(B, Mul(cb, w));
+                return Len(Sub(p, proj));
+            }
+            // Inside face region: distance to plane
+            var n = Cross(ab, ac);
+            n = Normalize(n);
+            float dist = Math.Abs(Dot(Sub(p, A), n));
+            return dist;
+        }
+
+        private static Vector3 Sub(Vector3 a, Vector3 b) => new Vector3(a.X - b.X, a.Y - b.Y, a.Z - b.Z);
+        private static Vector3 Add(Vector3 a, Vector3 b) => new Vector3(a.X + b.X, a.Y + b.Y, a.Z + b.Z);
+        private static Vector3 Mul(Vector3 a, float s) => new Vector3(a.X * s, a.Y * s, a.Z * s);
+        private static Vector3 Cross(Vector3 a, Vector3 b) => new Vector3(a.Y * b.Z - a.Z * b.Y, a.Z * b.X - a.X * b.Z, a.X * b.Y - a.Y * b.X);
     }
 }
