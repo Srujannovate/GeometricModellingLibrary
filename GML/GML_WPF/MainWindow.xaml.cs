@@ -157,7 +157,9 @@ namespace GML_WPF
                 var model = new Hx.MeshGeometryModel3D
                 {
                     Geometry = meshGeom,
-                    Material = Hx.PhongMaterials.Gray
+                    Material = Hx.PhongMaterials.Gray,
+                    RenderWireframe = true,
+                    WireframeColor = System.Windows.Media.Colors.Lime
                 };
                 View3D.Items.Add(model);
             }
