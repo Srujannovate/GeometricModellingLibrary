@@ -1,8 +1,10 @@
 <Solution>
   <Configurations>
+    <Platform Name="Any CPU" />
     <Platform Name="x64" />
     <Platform Name="x86" />
   </Configurations>
   <Project Path="GML/GML.vcxproj" Id="e5588b02-3ba0-4698-9365-50162e0ca2fc" />
   <Project Path="GML_Library/GML_Library.vcxproj" Id="e47e5bcd-f297-4c22-a6b6-5519be8f9003" />
+  <Project Path="GML_WPF/GML_WPF.csproj" Id="d7320bfa-823f-4349-918e-37fe7d2e00f4" />
 </Solution>
