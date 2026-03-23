@@ -23,6 +23,14 @@ namespace GML_WPF
     /// </summary>
     public partial class MainWindow : Window
     {
+        private sealed class Triangulation
+        {
+            public Vector3[] Positions = Array.Empty<Vector3>();
+            public int[] Indices = Array.Empty<int>();
+            public Transform3DGroup Transform = new Transform3DGroup();
+            public Hx.MeshGeometryModel3D? Model; // visualization hook
+        }
+
         private readonly Hx.PerspectiveCamera _camera = new Hx.PerspectiveCamera
         {
             Position = new Point3D(0, 0, 8),
@@ -31,11 +39,17 @@ namespace GML_WPF
             FieldOfView = 45
         };
 
-        private readonly List<Hx.MeshGeometryModel3D> _imported = new();
+        // Keep models as list of triangulations
+        private readonly List<Triangulation> _triangulations = new();
+        // KD-tree cache over ALL loaded models (combined)
+        private IntPtr _kdTree = IntPtr.Zero;
+        private int _kdPointCount = 0;
+        private bool _kdDirty = true;
 
         public MainWindow()
         {
             InitializeComponent();
+            this.Closed += (_, __) => { if (_kdTree != IntPtr.Zero) { GML.Interop.Gml.KDTreeDestroy(_kdTree); _kdTree = IntPtr.Zero; } };
 
             // Initialize DirectX manager and camera in code-behind
             View3D.EffectsManager = new HxSharpDX.DefaultEffectsManager();
@@ -80,7 +94,7 @@ namespace GML_WPF
                 RenderWireframe = true
             };
 
-            View3D.Items.Add(cubeModel);
+            //View3D.Items.Add(cubeModel);
 
             // Optional: handle menu actions like reset camera
             ResetCameraMenuItem.Click += (_, __) =>
@@ -118,12 +132,12 @@ namespace GML_WPF
 
         private void LoadObjToViewport(string path)
         {
-            // Remove previously imported models from viewport and list (keep the sample cube)
-            foreach (var m in _imported)
+            // Remove previously imported triangulations from viewport (keep the sample cube)
+            foreach (var t in _triangulations)
             {
-                View3D.Items.Remove(m);
+                if (t.Model != null) View3D.Items.Remove(t.Model);
             }
-            _imported.Clear();
+            _triangulations.Clear();
 
             var context = new AssimpContext();
             var scene = context.ImportFile(path, PostProcessSteps.Triangulate | PostProcessSteps.JoinIdenticalVertices);
@@ -132,30 +146,35 @@ namespace GML_WPF
 
             foreach (var mesh in scene.Meshes)
             {
-                var positions = new HT.Vector3Collection(mesh.VertexCount);
+                // Keep a triangulation copy
+                var tri = new Triangulation();
+                var posList = new List<Vector3>(mesh.VertexCount);
                 for (int i = 0; i < mesh.VertexCount; i++)
                 {
                     var v = mesh.Vertices[i];
-                    positions.Add(new Vector3(v.X, v.Y, v.Z));
+                    posList.Add(new Vector3(v.X, v.Y, v.Z));
                 }
-
-                var indices = new HT.IntCollection(mesh.FaceCount * 3);
+                tri.Positions = posList.ToArray();
+                var idx = new List<int>(mesh.FaceCount * 3);
                 foreach (var f in mesh.Faces)
                 {
                     if (f.IndexCount == 3)
                     {
-                        indices.Add(f.Indices[0]);
-                        indices.Add(f.Indices[1]);
-                        indices.Add(f.Indices[2]);
+                        idx.Add(f.Indices[0]);
+                        idx.Add(f.Indices[1]);
+                        idx.Add(f.Indices[2]);
                     }
                 }
+                tri.Indices = idx.ToArray();
 
+                // Build Helix geometry for rendering from the triangulation
+                var positions = new HT.Vector3Collection(tri.Positions);
+                var indices = new HT.IntCollection(tri.Indices);
                 var meshGeom = new HxSharpDX.MeshGeometry3D
                 {
                     Positions = positions,
                     Indices = indices
                 };
-
                 var model = new Hx.MeshGeometryModel3D
                 {
                     Geometry = meshGeom,
@@ -163,21 +182,25 @@ namespace GML_WPF
                     RenderWireframe = true,
                     WireframeColor = Colors.Lime
                 };
-                // Ensure each imported model has a transform group so we can edit it later
-                model.Transform = model.Transform ?? new Transform3DGroup();
+                // Share the Transform3DGroup instance with the triangulation
+                model.Transform = tri.Transform;
+                tri.Model = model;
 
                 View3D.Items.Add(model);
-                _imported.Add(model);
+                _triangulations.Add(tri);
             }
+            MarkKdDirty();
         }
 
         // ===== Transform menu handlers =====
         private void ResetModelTransformMenuItem_Click(object sender, RoutedEventArgs e)
         {
-            foreach (var m in _imported)
+            foreach (var t in _triangulations)
             {
-                m.Transform = new Transform3DGroup();
+                t.Transform = new Transform3DGroup();
+                if (t.Model != null) t.Model.Transform = t.Transform;
             }
+            MarkKdDirty();
         }
 
         private void TranslateMenuItem_Click(object sender, RoutedEventArgs e)
@@ -189,10 +212,11 @@ namespace GML_WPF
                 MessageBox.Show(this, "Enter three comma-separated numbers, e.g. 10,0,-5", "Invalid input", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
-            foreach (var m in _imported)
+            foreach (var t in _triangulations)
             {
-                EnsureTransformGroup(m).Children.Add(new TranslateTransform3D(a, b, c));
+                t.Transform.Children.Add(new TranslateTransform3D(a, b, c));
             }
+            MarkKdDirty();
         }
 
         private void RotateMenuItem_Click(object sender, RoutedEventArgs e)
@@ -209,11 +233,12 @@ namespace GML_WPF
             var len = Math.Sqrt(ax * ax + ay * ay + az * az);
             if (len < 1e-9) { MessageBox.Show(this, "Axis must be non-zero", "Invalid input"); return; }
             ax /= len; ay /= len; az /= len;
-            foreach (var m in _imported)
+            foreach (var t in _triangulations)
             {
                 var rot = new AxisAngleRotation3D(new System.Windows.Media.Media3D.Vector3D(ax, ay, az), ang);
-                EnsureTransformGroup(m).Children.Add(new RotateTransform3D(rot));
+                t.Transform.Children.Add(new RotateTransform3D(rot));
             }
+            MarkKdDirty();
         }
 
         private void ScaleMenuItem_Click(object sender, RoutedEventArgs e)
@@ -225,18 +250,11 @@ namespace GML_WPF
                 MessageBox.Show(this, "Enter three comma-separated numbers, e.g. 1,1,1", "Invalid input", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
-            foreach (var m in _imported)
+            foreach (var t in _triangulations)
             {
-                EnsureTransformGroup(m).Children.Add(new ScaleTransform3D(sx, sy, sz));
+                t.Transform.Children.Add(new ScaleTransform3D(sx, sy, sz));
             }
-        }
-
-        private static Transform3DGroup EnsureTransformGroup(Hx.MeshGeometryModel3D m)
-        {
-            if (m.Transform is Transform3DGroup g) return g;
-            g = new Transform3DGroup();
-            m.Transform = g;
-            return g;
+            MarkKdDirty();
         }
 
         private static bool TryParse3(string text, out double a, out double b, out double c)
@@ -258,15 +276,10 @@ namespace GML_WPF
                 MessageBox.Show(this, "Enter: cx,cy,cz,r", "Invalid input", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
-            var xyz = CollectWorldXYZ();
-            if (xyz.Length == 0) { MessageBox.Show(this, "No points to test."); return; }
-            var tree = GML.Interop.Gml.KDTreeCreateFromXYZ(xyz, xyz.Length / 3);
-            try
-            {
-                bool hit = GML.Interop.Gml.KDTreeSphereIntersects(tree, cx, cy, cz, r);
-                MessageBox.Show(this, hit ? "Intersection: YES" : "Intersection: NO", "Sphere vs KDTree");
-            }
-            finally { GML.Interop.Gml.KDTreeDestroy(tree); }
+            var tree = EnsureNativeTree();
+            if (tree == IntPtr.Zero) { MessageBox.Show(this, "No points to test."); return; }
+            bool hit = GML.Interop.Gml.KDTreeSphereIntersects(tree, cx, cy, cz, r);
+            MessageBox.Show(this, hit ? "Intersection: YES" : "Intersection: NO", "Sphere vs KDTree");
         }
 
         private void CylinderIntersectMenuItem_Click(object sender, RoutedEventArgs e)
@@ -279,15 +292,10 @@ namespace GML_WPF
                 !double.TryParse(p[3], out var x1) || !double.TryParse(p[4], out var y1) || !double.TryParse(p[5], out var z1) ||
                 !double.TryParse(p[6], out var r)) { MessageBox.Show(this, "Invalid numbers"); return; }
 
-            var xyz = CollectWorldXYZ();
-            if (xyz.Length == 0) { MessageBox.Show(this, "No points to test."); return; }
-            var tree = GML.Interop.Gml.KDTreeCreateFromXYZ(xyz, xyz.Length / 3);
-            try
-            {
-                bool hit = GML.Interop.Gml.KDTreeCylinderIntersects(tree, x0, y0, z0, x1, y1, z1, r);
-                MessageBox.Show(this, hit ? "Intersection: YES" : "Intersection: NO", "Cylinder vs KDTree");
-            }
-            finally { GML.Interop.Gml.KDTreeDestroy(tree); }
+            var tree = EnsureNativeTree();
+            if (tree == IntPtr.Zero) { MessageBox.Show(this, "No points to test."); return; }
+            bool hit = GML.Interop.Gml.KDTreeCylinderIntersects(tree, x0, y0, z0, x1, y1, z1, r);
+            MessageBox.Show(this, hit ? "Intersection: YES" : "Intersection: NO", "Cylinder vs KDTree");
         }
 
         private void ConeIntersectMenuItem_Click(object sender, RoutedEventArgs e)
@@ -300,42 +308,35 @@ namespace GML_WPF
                 !double.TryParse(p[3], out var x1) || !double.TryParse(p[4], out var y1) || !double.TryParse(p[5], out var z1) ||
                 !double.TryParse(p[6], out var r)) { MessageBox.Show(this, "Invalid numbers"); return; }
 
-            var xyz = CollectWorldXYZ();
-            if (xyz.Length == 0) { MessageBox.Show(this, "No points to test."); return; }
-            var tree = GML.Interop.Gml.KDTreeCreateFromXYZ(xyz, xyz.Length / 3);
-            try
-            {
-                bool hit = GML.Interop.Gml.KDTreeConeIntersects(tree, x0, y0, z0, x1, y1, z1, r);
-                MessageBox.Show(this, hit ? "Intersection: YES" : "Intersection: NO", "Cone vs KDTree");
-            }
-            finally { GML.Interop.Gml.KDTreeDestroy(tree); }
+            var tree = EnsureNativeTree();
+            if (tree == IntPtr.Zero) { MessageBox.Show(this, "No points to test."); return; }
+            bool hit = GML.Interop.Gml.KDTreeConeIntersects(tree, x0, y0, z0, x1, y1, z1, r);
+            MessageBox.Show(this, hit ? "Intersection: YES" : "Intersection: NO", "Cone vs KDTree");
         }
 
-        private IEnumerable<(System.Windows.Media.Media3D.Point3D point, Hx.MeshGeometryModel3D model)> EnumerateWorldPoints()
+        private IEnumerable<(System.Windows.Media.Media3D.Point3D point, Hx.MeshGeometryModel3D? model)> EnumerateWorldPoints()
         {
-            foreach (var m in _imported)
+            foreach (var t in _triangulations)
             {
-                if (m.Geometry is not HxSharpDX.MeshGeometry3D geom) continue;
-                var xf = (m.Transform as Transform3D) ?? Transform3D.Identity;
-                var mat = xf.Value;
-                foreach (var v in geom.Positions)
+                var mat = t.Transform.Value;
+                foreach (var v in t.Positions)
                 {
                     var p = new System.Windows.Media.Media3D.Point3D(v.X, v.Y, v.Z);
-                    yield return (mat.Transform(p), m);
+                    yield return (mat.Transform(p), t.Model);
                 }
             }
         }
 
         private double[] CollectWorldXYZ()
         {
-            // Flattens transformed vertices to [x0,y0,z0, x1,y1,z1, ...]
-            var list = new List<double>(capacity: _imported.Sum(m => ((HxSharpDX.MeshGeometry3D)m.Geometry).Positions.Count) * 3);
-            foreach (var m in _imported)
+            // Flattens transformed vertices of ALL triangulations into one array
+            int total = 0;
+            foreach (var t in _triangulations) total += t.Positions.Length;
+            var list = new List<double>(capacity: total * 3);
+            foreach (var t in _triangulations)
             {
-                if (m.Geometry is not HxSharpDX.MeshGeometry3D geom) continue;
-                var xf = (m.Transform as Transform3D) ?? Transform3D.Identity;
-                var mat = xf.Value;
-                foreach (var v in geom.Positions)
+                var mat = t.Transform.Value;
+                foreach (var v in t.Positions)
                 {
                     var p = mat.Transform(new System.Windows.Media.Media3D.Point3D(v.X, v.Y, v.Z));
                     list.Add(p.X); list.Add(p.Y); list.Add(p.Z);
@@ -347,35 +348,46 @@ namespace GML_WPF
         // ===== Export =====
         private void ExportMenuItem_Click(object sender, RoutedEventArgs e)
         {
-            if (_imported.Count == 0) { MessageBox.Show(this, "No imported mesh to export."); return; }
+            if (_triangulations.Count == 0) { MessageBox.Show(this, "No imported mesh to export."); return; }
             var dlg = new SaveFileDialog { Title = "Export OBJ", Filter = "Wavefront OBJ (*.obj)|*.obj" };
             if (dlg.ShowDialog(this) != true) return;
 
             using var sw = new StreamWriter(dlg.FileName);
             sw.WriteLine("# Exported from GML_WPF");
             int vertexBase = 1;
-            for (int mi = 0; mi < _imported.Count; mi++)
+            for (int mi = 0; mi < _triangulations.Count; mi++)
             {
-                var m = _imported[mi];
-                var geom = (HxSharpDX.MeshGeometry3D)m.Geometry;
-                var xf = (m.Transform as Transform3D) ?? Transform3D.Identity;
-                var mat = xf.Value;
+                var t = _triangulations[mi];
+                var mat = t.Transform.Value;
                 sw.WriteLine($"o mesh_{mi}");
-                foreach (var v in geom.Positions)
+                foreach (var v in t.Positions)
                 {
                     var p = mat.Transform(new System.Windows.Media.Media3D.Point3D(v.X, v.Y, v.Z));
                     sw.WriteLine($"v {p.X:F6} {p.Y:F6} {p.Z:F6}");
                 }
-                for (int i = 0; i < geom.Indices.Count; i += 3)
+                for (int i = 0; i < t.Indices.Length; i += 3)
                 {
-                    int a = geom.Indices[i] + vertexBase;
-                    int b = geom.Indices[i + 1] + vertexBase;
-                    int c = geom.Indices[i + 2] + vertexBase;
+                    int a = t.Indices[i] + vertexBase;
+                    int b = t.Indices[i + 1] + vertexBase;
+                    int c = t.Indices[i + 2] + vertexBase;
                     sw.WriteLine($"f {a} {b} {c}");
                 }
-                vertexBase += geom.Positions.Count;
+                vertexBase += t.Positions.Length;
             }
             MessageBox.Show(this, "Export complete.", "OBJ Export", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        private void MarkKdDirty() { _kdDirty = true; }
+
+        private IntPtr EnsureNativeTree()
+        {
+            if (!_kdDirty && _kdTree != IntPtr.Zero) return _kdTree;
+            if (_kdTree != IntPtr.Zero) { GML.Interop.Gml.KDTreeDestroy(_kdTree); _kdTree = IntPtr.Zero; }
+            var xyz = CollectWorldXYZ();
+            if (xyz.Length == 0) return IntPtr.Zero;
+            _kdTree = GML.Interop.Gml.KDTreeCreateFromXYZ(xyz, xyz.Length / 3);
+            _kdPointCount = xyz.Length / 3;
+            _kdDirty = false;
+            return _kdTree;
         }
     }
 }
