@@ -53,3 +53,11 @@ extern "C" GMLLIBRARY_API int GML_KDTree_ConeIntersects(
 extern "C" GMLLIBRARY_API gml::KDTree3d* GML_KDTree_CreateFromXYZ(const double* xyz, std::size_t count);
 // Destroy a KDTree3d created by GML_KDTree_CreateFromXYZ.
 extern "C" GMLLIBRARY_API void GML_KDTree_Destroy(gml::KDTree3d* tree);
+
+// Find nearest KDTree point to query (qx,qy,qz). Returns 1 if found; 0 if tree is null/empty.
+// Outputs nearest point coordinates and Euclidean distance via out_* pointers (if not null).
+extern "C" GMLLIBRARY_API int GML_KDTree_Nearest(
+    const gml::KDTree3d* tree,
+    double qx, double qy, double qz,
+    double* out_x, double* out_y, double* out_z,
+    double* out_dist);

@@ -112,6 +112,22 @@ extern "C" GMLLIBRARY_API void GML_KDTree_Destroy(gml::KDTree3d* tree) {
     delete tree;
 }
 
+extern "C" GMLLIBRARY_API int GML_KDTree_Nearest(
+    const gml::KDTree3d* tree,
+    double qx, double qy, double qz,
+    double* out_x, double* out_y, double* out_z,
+    double* out_dist) {
+    if (!tree) return 0;
+    gml::KDTree3d::Point q{ qx, qy, qz };
+    auto res = tree->nearest(q);
+    if (!res) return 0;
+    if (out_x) *out_x = res->item.point[0];
+    if (out_y) *out_y = res->item.point[1];
+    if (out_z) *out_z = res->item.point[2];
+    if (out_dist) *out_dist = res->distance;
+    return 1;
+}
+
 extern "C" GMLLIBRARY_API int GML_KDTree_ConeIntersects(
     const gml::KDTree3d* tree,
     double x0, double y0, double z0,

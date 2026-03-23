@@ -30,5 +30,9 @@ namespace GML.Interop
             double x1, double y1, double z1,
             double r)
             => GmlNative.KDTree_ConeIntersects(tree, x0, y0, z0, x1, y1, z1, r) != 0;
+
+        public static bool KDTreeNearest(IntPtr tree, double qx, double qy, double qz,
+            out double x, out double y, out double z, out double dist)
+            => GmlNative.KDTree_Nearest(tree, qx, qy, qz, out x, out y, out z, out dist) != 0;
     }
 }

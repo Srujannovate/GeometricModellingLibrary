@@ -33,6 +33,11 @@ namespace GML_WPF
             // Cached local-space AABB (min/max)
             public Vector3 LocalMin;
             public Vector3 LocalMax;
+            // Uniform grid acceleration
+            public (int X, int Y, int Z) GridDims;
+            public Vector3 GridOrigin; // usually LocalMin
+            public Vector3 CellSize;   // per-axis cell size
+            public Dictionary<(int x,int y,int z), List<int>> Grid = new(); // maps cell -> list of triangle base indices (i of Indices[i..i+2])
         }
 
         private readonly Hx.PerspectiveCamera _camera = new Hx.PerspectiveCamera
@@ -134,6 +139,28 @@ namespace GML_WPF
             }
         }
 
+        private void NearestPointMenuItem_Click(object sender, RoutedEventArgs e)
+        {
+            var text = VB.Interaction.InputBox("qx,qy,qz (world)", "Nearest Point", "0,0,0", -1, -1);
+            if (string.IsNullOrWhiteSpace(text)) return;
+            if (!TryParse3(text, out var qx, out var qy, out var qz))
+            {
+                MessageBox.Show(this, "Enter three comma-separated numbers, e.g. 0,0,0", "Invalid input", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+            var tree = EnsureNativeTree();
+            if (tree == IntPtr.Zero) { MessageBox.Show(this, "No points loaded."); return; }
+            if (GML.Interop.Gml.KDTreeNearest(tree, qx, qy, qz, out var nx, out var ny, out var nz, out var dist))
+            {
+                ShowPointOverlay(nx, ny, nz);
+                MessageBox.Show(this, $"Nearest: ({nx:F6}, {ny:F6}, {nz:F6})\nDistance: {dist:F6}", "KD-Tree Nearest");
+            }
+            else
+            {
+                MessageBox.Show(this, "No nearest point found (tree empty).", "KD-Tree Nearest");
+            }
+        }
+
         private void LoadObjToViewport(string path)
         {
             // Remove previously imported triangulations from viewport (keep the sample cube)
@@ -172,6 +199,9 @@ namespace GML_WPF
                     }
                 }
                 tri.Indices = idx.ToArray();
+
+                // Build uniform grid accelerator
+                BuildGrid(tri);
 
                 // Build Helix geometry for rendering from the triangulation
                 var positions = new HT.Vector3Collection(tri.Positions);
@@ -357,6 +387,70 @@ namespace GML_WPF
             }
         }
 
+        // ===== Uniform grid build and queries =====
+        private static void BuildGrid(Triangulation t)
+        {
+            // Choose grid resolution ~32 cells along the longest axis (clamped)
+            var ext = new Vector3(t.LocalMax.X - t.LocalMin.X, t.LocalMax.Y - t.LocalMin.Y, t.LocalMax.Z - t.LocalMin.Z);
+            float longest = Math.Max(ext.X, Math.Max(ext.Y, ext.Z));
+            int baseDiv = Math.Clamp((int)Math.Ceiling(longest / Math.Max(longest / 32f, 1e-3f)), 1, 64);
+            int gx = Math.Max(1, (int)Math.Ceiling(baseDiv * (ext.X / Math.Max(longest, 1e-6f))));
+            int gy = Math.Max(1, (int)Math.Ceiling(baseDiv * (ext.Y / Math.Max(longest, 1e-6f))));
+            int gz = Math.Max(1, (int)Math.Ceiling(baseDiv * (ext.Z / Math.Max(longest, 1e-6f))));
+            t.GridDims = (gx, gy, gz);
+            t.GridOrigin = t.LocalMin;
+            t.CellSize = new Vector3(ext.X / Math.Max(gx,1), ext.Y / Math.Max(gy,1), ext.Z / Math.Max(gz,1));
+            if (t.CellSize.X <= 0) t.CellSize.X = 1e-3f;
+            if (t.CellSize.Y <= 0) t.CellSize.Y = 1e-3f;
+            if (t.CellSize.Z <= 0) t.CellSize.Z = 1e-3f;
+            t.Grid.Clear();
+
+            // Insert triangles into overlapping cells based on local-space triangle AABBs
+            for (int i = 0; i < t.Indices.Length; i += 3)
+            {
+                var a = t.Positions[t.Indices[i]];
+                var b = t.Positions[t.Indices[i + 1]];
+                var c = t.Positions[t.Indices[i + 2]];
+                LocalTriAabb(a, b, c, out var mn, out var mx);
+                CellRangeForAabb(t, mn, mx, out var imin, out var imax);
+                for (int ix = imin.x; ix <= imax.x; ix++)
+                    for (int iy = imin.y; iy <= imax.y; iy++)
+                        for (int iz = imin.z; iz <= imax.z; iz++)
+                        {
+                            var key = (ix, iy, iz);
+                            if (!t.Grid.TryGetValue(key, out var list)) { list = new List<int>(); t.Grid[key] = list; }
+                            list.Add(i);
+                        }
+            }
+        }
+
+        private static void LocalTriAabb(in Vector3 a, in Vector3 b, in Vector3 c, out Vector3 mn, out Vector3 mx)
+        {
+            mn = new Vector3(Math.Min(a.X, Math.Min(b.X, c.X)), Math.Min(a.Y, Math.Min(b.Y, c.Y)), Math.Min(a.Z, Math.Min(b.Z, c.Z)));
+            mx = new Vector3(Math.Max(a.X, Math.Max(b.X, c.X)), Math.Max(a.Y, Math.Max(b.Y, c.Y)), Math.Max(a.Z, Math.Max(b.Z, c.Z)));
+        }
+
+        private static (int x,int y,int z) CellOf(Triangulation t, in Vector3 p)
+        {
+            int ix = (int)Math.Floor((p.X - t.GridOrigin.X) / t.CellSize.X);
+            int iy = (int)Math.Floor((p.Y - t.GridOrigin.Y) / t.CellSize.Y);
+            int iz = (int)Math.Floor((p.Z - t.GridOrigin.Z) / t.CellSize.Z);
+            return (ix, iy, iz);
+        }
+
+        private static void CellRangeForAabb(Triangulation t, in Vector3 mn, in Vector3 mx, out (int x,int y,int z) imin, out (int x,int y,int z) imax)
+        {
+            var c0 = CellOf(t, mn);
+            var c1 = CellOf(t, mx);
+            int x0 = Math.Min(c0.x, c1.x), x1 = Math.Max(c0.x, c1.x);
+            int y0 = Math.Min(c0.y, c1.y), y1 = Math.Max(c0.y, c1.y);
+            int z0 = Math.Min(c0.z, c1.z), z1 = Math.Max(c0.z, c1.z);
+            x0 = Math.Clamp(x0, 0, t.GridDims.X - 1); x1 = Math.Clamp(x1, 0, t.GridDims.X - 1);
+            y0 = Math.Clamp(y0, 0, t.GridDims.Y - 1); y1 = Math.Clamp(y1, 0, t.GridDims.Y - 1);
+            z0 = Math.Clamp(z0, 0, t.GridDims.Z - 1); z1 = Math.Clamp(z1, 0, t.GridDims.Z - 1);
+            imin = (x0, y0, z0); imax = (x1, y1, z1);
+        }
+
         private double[] CollectWorldXYZ()
         {
             // Flattens transformed vertices of ALL triangulations into one array
@@ -460,6 +554,25 @@ namespace GML_WPF
             _overlays.Add(model);
         }
 
+        private void ShowPointOverlay(double x, double y, double z)
+        {
+            ClearOverlays();
+            // Determine a small radius based on scene AABB
+            if (!TryGetSceneAabb(out var smin, out var smax)) return;
+            var diag = Math.Sqrt((smax.X - smin.X) * (smax.X - smin.X) + (smax.Y - smin.Y) * (smax.Y - smin.Y) + (smax.Z - smin.Z) * (smax.Z - smin.Z));
+            var r = Math.Max(1e-3, 0.01 * diag);
+            var geom = BuildSphere((float)x, (float)y, (float)z, (float)r, 16, 8);
+            var model = new Hx.MeshGeometryModel3D
+            {
+                Geometry = geom,
+                Material = Hx.PhongMaterials.Blue,
+                RenderWireframe = true,
+                WireframeColor = Colors.Yellow
+            };
+            View3D.Items.Add(model);
+            _overlays.Add(model);
+        }
+
         private IntPtr EnsureNativeTree()
         {
             if (!_kdDirty && _kdTree != IntPtr.Zero) return _kdTree;
@@ -470,6 +583,24 @@ namespace GML_WPF
             _kdPointCount = xyz.Length / 3;
             _kdDirty = false;
             return _kdTree;
+        }
+
+        private bool TryGetSceneAabb(out Vector3 min, out Vector3 max)
+        {
+            min = new Vector3(float.PositiveInfinity, float.PositiveInfinity, float.PositiveInfinity);
+            max = new Vector3(float.NegativeInfinity, float.NegativeInfinity, float.NegativeInfinity);
+            bool any = false;
+            foreach (var t in _triangulations)
+            {
+                GetWorldAabb(t, out var wmin, out var wmax);
+                if (!any) { min = wmin; max = wmax; any = true; }
+                else
+                {
+                    if (wmin.X < min.X) min.X = wmin.X; if (wmin.Y < min.Y) min.Y = wmin.Y; if (wmin.Z < min.Z) min.Z = wmin.Z;
+                    if (wmax.X > max.X) max.X = wmax.X; if (wmax.Y > max.Y) max.Y = wmax.Y; if (wmax.Z > max.Z) max.Z = wmax.Z;
+                }
+            }
+            return any;
         }
 
         // ==== Simple tessellation helpers for overlays ====
@@ -602,18 +733,47 @@ namespace GML_WPF
 
         private static bool PointInMesh(System.Windows.Media.Media3D.Point3D p, System.Windows.Media.Media3D.Vector3D dir, Triangulation tri)
         {
+            // Transform ray into triangulation local space
+            var inv = tri.Transform.Value; if (!inv.HasInverse) return false; inv.Invert();
+            var p2 = new System.Windows.Media.Media3D.Point3D(p.X + dir.X, p.Y + dir.Y, p.Z + dir.Z);
+            var oL = inv.Transform(p);
+            var qL = inv.Transform(p2);
+            var dL = qL - oL;
+            // Epsilon shift to avoid surface start
+            oL = new System.Windows.Media.Media3D.Point3D(oL.X + 1e-6, oL.Y + 1e-6, oL.Z + 1e-6);
+
+            // Use grid acceleration: traverse cells along +X local direction by sampling a small YZ band
+            var oy = (float)oL.Y; var oz = (float)oL.Z; var ox = (float)oL.X;
+            var cell = CellOf(tri, new Vector3(ox, oy, oz));
+            int cy = Math.Clamp(cell.y, 0, tri.GridDims.Y - 1);
+            int cz = Math.Clamp(cell.z, 0, tri.GridDims.Z - 1);
+            int cx = Math.Clamp(cell.x, 0, tri.GridDims.X - 1);
+            var visited = new HashSet<int>();
             int hits = 0;
-            var mat = tri.Transform.Value;
-            var pos = tri.Positions;
-            var idx = tri.Indices;
-            // small epsilon shift to avoid starting exactly on triangles
-            var o = new System.Windows.Media.Media3D.Point3D(p.X + 1e-6, p.Y + 1e-6, p.Z + 1e-6);
-            for (int i = 0; i < idx.Length; i += 3)
+            for (int x = cx; x < tri.GridDims.X; x++)
             {
-                var a = ToP3D(mat, pos[idx[i]]);
-                var b = ToP3D(mat, pos[idx[i + 1]]);
-                var c = ToP3D(mat, pos[idx[i + 2]]);
-                if (RayTriangleIntersect(o, dir, a, b, c)) hits++;
+                for (int dy = -1; dy <= 1; dy++)
+                {
+                    int yy = cy + dy; if (yy < 0 || yy >= tri.GridDims.Y) continue;
+                    for (int dz = -1; dz <= 1; dz++)
+                    {
+                        int zz = cz + dz; if (zz < 0 || zz >= tri.GridDims.Z) continue;
+                        if (tri.Grid.TryGetValue((x, yy, zz), out var list))
+                        {
+                            foreach (var i in list)
+                            {
+                                if (!visited.Add(i)) continue;
+                                var a = tri.Positions[tri.Indices[i]];
+                                var b = tri.Positions[tri.Indices[i + 1]];
+                                var c = tri.Positions[tri.Indices[i + 2]];
+                                var A = new System.Windows.Media.Media3D.Point3D(a.X, a.Y, a.Z);
+                                var B = new System.Windows.Media.Media3D.Point3D(b.X, b.Y, b.Z);
+                                var C = new System.Windows.Media.Media3D.Point3D(c.X, c.Y, c.Z);
+                                if (RayTriangleIntersect(oL, dL, A, B, C)) hits++;
+                            }
+                        }
+                    }
+                }
             }
             return (hits % 2) == 1;
         }
@@ -763,39 +923,64 @@ namespace GML_WPF
 
         private bool CylinderIntersectsMesh(Vector3 p0, Vector3 p1, float r)
         {
-            // Cylinder AABB for quick cull
+            // Cylinder AABB for quick cull (world)
             var cmin = new Vector3(Math.Min(p0.X, p1.X) - r, Math.Min(p0.Y, p1.Y) - r, Math.Min(p0.Z, p1.Z) - r);
             var cmax = new Vector3(Math.Max(p0.X, p1.X) + r, Math.Max(p0.Y, p1.Y) + r, Math.Max(p0.Z, p1.Z) + r);
-            // Check each triangle for proximity to the axis segment within radius r
             foreach (var t in _triangulations)
             {
-                // Per-triangulation world-space AABB cull
+                // Skip triangulations whose world AABB doesn't overlap
                 GetWorldAabb(t, out var wmin, out var wmax);
                 if (!AabbOverlaps(cmin, cmax, wmin, wmax)) continue;
 
-                var M = t.Transform.Value;
-                var pos = t.Positions; var idx = t.Indices;
-                for (int i = 0; i < idx.Length; i += 3)
-                {
-                    var a = ToP3D(M, pos[idx[i]]);
-                    var b = ToP3D(M, pos[idx[i + 1]]);
-                    var c = ToP3D(M, pos[idx[i + 2]]);
-                    // 1) Direct axis-segment to triangle intersection
-                    if (SegmentTriangleIntersect(p0, p1, a, b, c)) return true;
-                    // 2) Distance from axis segment to each triangle edge <= r
-                    var e0p0 = new Vector3((float)a.X, (float)a.Y, (float)a.Z);
-                    var e0p1 = new Vector3((float)b.X, (float)b.Y, (float)b.Z);
-                    var e1p0 = new Vector3((float)b.X, (float)b.Y, (float)b.Z);
-                    var e1p1 = new Vector3((float)c.X, (float)c.Y, (float)c.Z);
-                    var e2p0 = new Vector3((float)c.X, (float)c.Y, (float)c.Z);
-                    var e2p1 = new Vector3((float)a.X, (float)a.Y, (float)a.Z);
-                    if (SegmentSegmentDistance(p0, p1, e0p0, e0p1) <= r) return true;
-                    if (SegmentSegmentDistance(p0, p1, e1p0, e1p1) <= r) return true;
-                    if (SegmentSegmentDistance(p0, p1, e2p0, e2p1) <= r) return true;
-                    // 3) Distance from axis endpoints to triangle face <= r (covers cap intersections)
-                    if (PointTriangleDistance(new Vector3(p0.X, p0.Y, p0.Z), a, b, c) <= r) return true;
-                    if (PointTriangleDistance(new Vector3(p1.X, p1.Y, p1.Z), a, b, c) <= r) return true;
-                }
+                // Transform cylinder axis into local space
+                var inv = t.Transform.Value; if (!inv.HasInverse) continue; inv.Invert();
+                var P0 = inv.Transform(new System.Windows.Media.Media3D.Point3D(p0.X, p0.Y, p0.Z));
+                var P1 = inv.Transform(new System.Windows.Media.Media3D.Point3D(p1.X, p1.Y, p1.Z));
+                var p0L = new Vector3((float)P0.X, (float)P0.Y, (float)P0.Z);
+                var p1L = new Vector3((float)P1.X, (float)P1.Y, (float)P1.Z);
+                // Conservative local radius scaling: multiply r by max column norm of 3x3
+                var m = t.Transform.Value;
+                float sx = (float)Math.Sqrt(m.M11 * m.M11 + m.M21 * m.M21 + m.M31 * m.M31);
+                float sy = (float)Math.Sqrt(m.M12 * m.M12 + m.M22 * m.M22 + m.M32 * m.M32);
+                float sz = (float)Math.Sqrt(m.M13 * m.M13 + m.M23 * m.M23 + m.M33 * m.M33);
+                float rL = r * Math.Max(sx, Math.Max(sy, sz));
+                var lcmin = new Vector3(Math.Min(p0L.X, p1L.X) - rL, Math.Min(p0L.Y, p1L.Y) - rL, Math.Min(p0L.Z, p1L.Z) - rL);
+                var lcmax = new Vector3(Math.Max(p0L.X, p1L.X) + rL, Math.Max(p0L.Y, p1L.Y) + rL, Math.Max(p0L.Z, p1L.Z) + rL);
+
+                // Get candidate triangles from grid cells overlapping the local AABB
+                CellRangeForAabb(t, lcmin, lcmax, out var imin, out var imax);
+                var visited = new HashSet<int>();
+                for (int ix = imin.x; ix <= imax.x; ix++)
+                    for (int iy = imin.y; iy <= imax.y; iy++)
+                        for (int iz = imin.z; iz <= imax.z; iz++)
+                        {
+                            if (!t.Grid.TryGetValue((ix, iy, iz), out var list)) continue;
+                            foreach (var i in list)
+                            {
+                                if (!visited.Add(i)) continue;
+                                var a = t.Positions[t.Indices[i]];
+                                var b = t.Positions[t.Indices[i + 1]];
+                                var c = t.Positions[t.Indices[i + 2]];
+                                var A = new System.Windows.Media.Media3D.Point3D(a.X, a.Y, a.Z);
+                                var B = new System.Windows.Media.Media3D.Point3D(b.X, b.Y, b.Z);
+                                var C = new System.Windows.Media.Media3D.Point3D(c.X, c.Y, c.Z);
+                                // 1) Direct axis-segment to triangle intersection in local space
+                                if (SegmentTriangleIntersect(p0L, p1L, A, B, C)) return true;
+                                // 2) Edge distance checks
+                                var e0p0 = new Vector3((float)A.X, (float)A.Y, (float)A.Z);
+                                var e0p1 = new Vector3((float)B.X, (float)B.Y, (float)B.Z);
+                                var e1p0 = new Vector3((float)B.X, (float)B.Y, (float)B.Z);
+                                var e1p1 = new Vector3((float)C.X, (float)C.Y, (float)C.Z);
+                                var e2p0 = new Vector3((float)C.X, (float)C.Y, (float)C.Z);
+                                var e2p1 = new Vector3((float)A.X, (float)A.Y, (float)A.Z);
+                                if (SegmentSegmentDistance(p0L, p1L, e0p0, e0p1) <= rL) return true;
+                                if (SegmentSegmentDistance(p0L, p1L, e1p0, e1p1) <= rL) return true;
+                                if (SegmentSegmentDistance(p0L, p1L, e2p0, e2p1) <= rL) return true;
+                                // 3) Endpoint to triangle distance (caps)
+                                if (PointTriangleDistance(new Vector3(p0L.X, p0L.Y, p0L.Z), A, B, C) <= rL) return true;
+                                if (PointTriangleDistance(new Vector3(p1L.X, p1L.Y, p1L.Z), A, B, C) <= rL) return true;
+                            }
+                        }
             }
             return false;
         }

@@ -36,6 +36,8 @@
                 <MenuItem Header="Sphere Intersection..." Click="SphereIntersectMenuItem_Click" />
                 <MenuItem Header="Cylinder Intersection..." Click="CylinderIntersectMenuItem_Click" />
                 <MenuItem Header="Cone Intersection..." Click="ConeIntersectMenuItem_Click" />
+                <Separator />
+                <MenuItem Header="Nearest Point..." Click="NearestPointMenuItem_Click" />
             </MenuItem>
             <MenuItem Header="_Help">
                 <MenuItem Header="About" />

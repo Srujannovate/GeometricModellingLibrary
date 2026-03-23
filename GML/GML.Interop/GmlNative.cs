@@ -43,5 +43,12 @@ namespace GML.Interop
 
         [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true, EntryPoint = "GML_KDTree_Destroy")]
         public static extern void KDTree_Destroy(IntPtr tree);
+
+        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true, EntryPoint = "GML_KDTree_Nearest")]
+        public static extern int KDTree_Nearest(
+            IntPtr tree,
+            double qx, double qy, double qz,
+            out double out_x, out double out_y, out double out_z,
+            out double out_dist);
     }
 }
