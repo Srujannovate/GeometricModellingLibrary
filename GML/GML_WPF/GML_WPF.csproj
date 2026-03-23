@@ -11,6 +11,18 @@
   <ItemGroup>
     <PackageReference Include="HelixToolkit.Wpf.SharpDX" Version="3.1.2" />
     <PackageReference Include="HelixToolkit.Geometry" Version="3.1.2" />
+    <PackageReference Include="AssimpNet" Version="5.0.0-beta1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\GML.Interop\GML.Interop.csproj" />
+  </ItemGroup>
+
+  <!-- Ensure the native DLL is copied next to the WPF exe for Debug/x64. Adjust for your build layout as needed. -->
+  <ItemGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <None Include="..\GML_Library\x64\Debug\GML_Library.dll">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
   </ItemGroup>
 
 </Project>

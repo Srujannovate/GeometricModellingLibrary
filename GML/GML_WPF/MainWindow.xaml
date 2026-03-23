@@ -17,9 +17,9 @@
         <!-- Top Menu -->
         <Menu Grid.Row="0">
             <MenuItem Header="_File">
-                <MenuItem Header="_Open..." />
+                <MenuItem Header="_Open..." x:Name="OpenMenuItem" Click="OpenMenuItem_Click" />
                 <Separator />
-                <MenuItem Header="E_xit" />
+                <MenuItem Header="E_xit" Click="ExitMenuItem_Click" />
             </MenuItem>
             <MenuItem Header="_View">
                 <MenuItem Header="Reset Camera" Name="ResetCameraMenuItem" />
