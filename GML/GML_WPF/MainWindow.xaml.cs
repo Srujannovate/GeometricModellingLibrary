@@ -67,7 +67,8 @@ namespace GML_WPF
             var cubeModel = new Hx.MeshGeometryModel3D
             {
                 Geometry = cubeMesh,
-                Material = Hx.PhongMaterials.Orange
+                Material = Hx.PhongMaterials.Orange,
+                RenderWireframe = true
             };
 
             View3D.Items.Add(cubeModel);
