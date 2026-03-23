@@ -4,9 +4,54 @@
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:local="clr-namespace:GML_WPF"
+        xmlns:ht="http://helix-toolkit.org/wpf/SharpDX"
         mc:Ignorable="d"
-        Title="GML App" Height="450" Width="800">
+        Title="GML App" Height="600" Width="1000">
     <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
 
+        <!-- Top Menu -->
+        <Menu Grid.Row="0">
+            <MenuItem Header="_File">
+                <MenuItem Header="_Open..." />
+                <Separator />
+                <MenuItem Header="E_xit" />
+            </MenuItem>
+            <MenuItem Header="_View">
+                <MenuItem Header="Reset Camera" Name="ResetCameraMenuItem" />
+            </MenuItem>
+            <MenuItem Header="_Help">
+                <MenuItem Header="About" />
+            </MenuItem>
+        </Menu>
+
+        <!-- DirectX-backed 3D viewport (mouse: rotate/pan/zoom) -->
+        <ht:Viewport3DX Grid.Row="1"
+                        x:Name="View3D"
+                        ShowCoordinateSystem="True"
+                        Background="Black">
+            <!-- Simple lights so models are visible when added later -->
+            <ht:DirectionalLight3D Color="#FFFFFFFF" Direction="-1,-1,-2" />
+            <ht:AmbientLight3D Color="#404040FF" />
+
+        </ht:Viewport3DX>
+
+        <!-- Bottom Status Bar -->
+        <StatusBar Grid.Row="2">
+            <StatusBarItem>
+                <TextBlock Text="Ready" />
+            </StatusBarItem>
+            <Separator />
+            <StatusBarItem>
+                <TextBlock Text="FPS:" />
+            </StatusBarItem>
+            <StatusBarItem>
+                <TextBlock Text="{Binding ElementName=View3D, Path=RenderStatistics.FPS, StringFormat=F0}" />
+            </StatusBarItem>
+        </StatusBar>
     </Grid>
 </Window>
