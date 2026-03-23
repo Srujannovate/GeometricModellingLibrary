@@ -18,11 +18,24 @@
         <Menu Grid.Row="0">
             <MenuItem Header="_File">
                 <MenuItem Header="_Open..." x:Name="OpenMenuItem" Click="OpenMenuItem_Click" />
+                <MenuItem Header="_Export Transformed Points..." x:Name="ExportMenuItem" Click="ExportMenuItem_Click" />
                 <Separator />
                 <MenuItem Header="E_xit" Click="ExitMenuItem_Click" />
             </MenuItem>
             <MenuItem Header="_View">
                 <MenuItem Header="Reset Camera" Name="ResetCameraMenuItem" />
+            </MenuItem>
+            <MenuItem Header="_Transform">
+                <MenuItem Header="Translate..." Click="TranslateMenuItem_Click" />
+                <MenuItem Header="Rotate..." Click="RotateMenuItem_Click" />
+                <MenuItem Header="Scale..." Click="ScaleMenuItem_Click" />
+                <Separator />
+                <MenuItem Header="Reset Model Transform" Click="ResetModelTransformMenuItem_Click" />
+            </MenuItem>
+            <MenuItem Header="_KD-Tree">
+                <MenuItem Header="Sphere Intersection..." Click="SphereIntersectMenuItem_Click" />
+                <MenuItem Header="Cylinder Intersection..." Click="CylinderIntersectMenuItem_Click" />
+                <MenuItem Header="Cone Intersection..." Click="ConeIntersectMenuItem_Click" />
             </MenuItem>
             <MenuItem Header="_Help">
                 <MenuItem Header="About" />

@@ -4,6 +4,7 @@
 #include "Include/KDTree.h"
 #include <algorithm>
 #include <cmath>
+#include <vector>
 
 extern "C" GMLLIBRARY_API int GML_Add(int a, int b) {
     return a + b;
@@ -86,6 +87,29 @@ extern "C" GMLLIBRARY_API int GML_KDTree_CylinderIntersects(
         }
     }
     return 0;
+}
+
+extern "C" GMLLIBRARY_API gml::KDTree3d* GML_KDTree_CreateFromXYZ(const double* xyz, std::size_t count) {
+    if (!xyz || count == 0) return nullptr;
+    std::vector<gml::KDTree3d::Item> items;
+    items.reserve(count);
+    for (std::size_t i = 0; i < count; ++i) {
+        const double x = xyz[3 * i + 0];
+        const double y = xyz[3 * i + 1];
+        const double z = xyz[3 * i + 2];
+        items.push_back({ gml::KDTree3d::Point{ x, y, z }, /*value=*/0.0 });
+    }
+    try {
+        auto* tree = new gml::KDTree3d(std::move(items));
+        return tree;
+    }
+    catch (...) {
+        return nullptr;
+    }
+}
+
+extern "C" GMLLIBRARY_API void GML_KDTree_Destroy(gml::KDTree3d* tree) {
+    delete tree;
 }
 
 extern "C" GMLLIBRARY_API int GML_KDTree_ConeIntersects(

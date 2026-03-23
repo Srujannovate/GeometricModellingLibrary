@@ -6,6 +6,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
+    <PlatformTarget>x64</PlatformTarget>
   </PropertyGroup>
 
   <ItemGroup>
@@ -18,11 +19,33 @@
     <ProjectReference Include="..\GML.Interop\GML.Interop.csproj" />
   </ItemGroup>
 
-  <!-- Ensure the native DLL is copied next to the WPF exe for Debug/x64. Adjust for your build layout as needed. -->
-  <ItemGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
-    <None Include="..\GML_Library\x64\Debug\GML_Library.dll">
+  <!-- Ensure the native DLL is copied next to the WPF exe for Debug/Release builds (x64 native library). -->
+  <ItemGroup Condition="'$(Configuration)'=='Debug'">
+    <None Include="..\GML_Library\x64\Debug\GML_Library.dll" Condition="Exists('..\GML_Library\x64\Debug\GML_Library.dll')">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Include="..\x64\Debug\GML_Library.dll" Condition="Exists('..\x64\Debug\GML_Library.dll')">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
   </ItemGroup>
+  <ItemGroup Condition="'$(Configuration)'=='Release'">
+    <None Include="..\GML_Library\x64\Release\GML_Library.dll" Condition="Exists('..\GML_Library\x64\Release\GML_Library.dll')">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Include="..\x64\Release\GML_Library.dll" Condition="Exists('..\x64\Release\GML_Library.dll')">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+  <!-- Post-build: copy native GML_Library.dll into the managed output folder -->
+  <Target Name="CopyGmlNative" AfterTargets="Build">
+    <ItemGroup>
+      <NativeGml Include="$(MSBuildProjectDirectory)\..\GML_Library\x64\$(Configuration)\GML_Library.dll" Condition="Exists('$(MSBuildProjectDirectory)\..\GML_Library\x64\$(Configuration)\GML_Library.dll')" />
+      <NativeGml Include="$(MSBuildProjectDirectory)\..\x64\$(Configuration)\GML_Library.dll" Condition="Exists('$(MSBuildProjectDirectory)\..\x64\$(Configuration)\GML_Library.dll')" />
+    </ItemGroup>
+    <Copy SourceFiles="@(NativeGml)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
+    <Message Importance="high" Text="Copied GML_Library.dll from %(NativeGml.Identity) to $(OutDir)" Condition=" '@(NativeGml)' != '' " />
+    <Warning Text="GML_Library.dll not found. Build the native project (x64, $(Configuration)) to enable interop." Condition=" '@(NativeGml)' == '' " />
+  </Target>
 
 </Project>

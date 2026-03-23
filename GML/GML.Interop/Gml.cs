@@ -11,7 +11,11 @@ namespace GML.Interop
             double x2, double y2, double z2, double r2)
             => GmlNative.SpheresIntersect(x1, y1, z1, r1, x2, y2, z2, r2) != 0;
 
-        // KDTree helpers intentionally left minimal; need factory/destructor exports in native lib
+        public static IntPtr KDTreeCreateFromXYZ(double[] xyz, int pointCount)
+            => GmlNative.KDTree_CreateFromXYZ(xyz, (UIntPtr)pointCount);
+
+        public static void KDTreeDestroy(IntPtr tree) => GmlNative.KDTree_Destroy(tree);
+
         public static bool KDTreeSphereIntersects(IntPtr tree, double cx, double cy, double cz, double r)
             => GmlNative.KDTree_SphereIntersects(tree, cx, cy, cz, r) != 0;
 

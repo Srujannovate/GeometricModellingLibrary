@@ -47,3 +47,9 @@ extern "C" GMLLIBRARY_API int GML_KDTree_ConeIntersects(
     double x0, double y0, double z0,
     double x1, double y1, double z1,
     double r);
+
+// KDTree lifecycle helpers for interop:
+// Create a KDTree3d from an array of XYZ triples (length=3*count). Returns opaque pointer; free with GML_KDTree_Destroy.
+extern "C" GMLLIBRARY_API gml::KDTree3d* GML_KDTree_CreateFromXYZ(const double* xyz, std::size_t count);
+// Destroy a KDTree3d created by GML_KDTree_CreateFromXYZ.
+extern "C" GMLLIBRARY_API void GML_KDTree_Destroy(gml::KDTree3d* tree);
