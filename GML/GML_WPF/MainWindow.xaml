@@ -24,6 +24,8 @@
             </MenuItem>
             <MenuItem Header="_View">
                 <MenuItem Header="Reset Camera" Name="ResetCameraMenuItem" />
+                <Separator />
+                <MenuItem Header="Show _Triangulation" Name="ShowTriangulationMenuItem" IsCheckable="True" IsChecked="False" Click="ShowTriangulationMenuItem_Click" />
             </MenuItem>
             <MenuItem Header="_Transform">
                 <MenuItem Header="Translate..." Click="TranslateMenuItem_Click" />

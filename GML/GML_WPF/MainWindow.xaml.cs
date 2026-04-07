@@ -50,6 +50,8 @@ namespace GML_WPF
 
         // Keep models as list of triangulations
         private readonly List<Triangulation> _triangulations = new();
+        // Edge line models from STEP BRep (cleared on new load)
+        private readonly List<Hx.LineGeometryModel3D> _edgeModels = new();
         // KD-tree cache over ALL loaded models (combined)
         private IntPtr _kdTree = IntPtr.Zero;
         private int _kdPointCount = 0;
@@ -165,14 +167,34 @@ namespace GML_WPF
             }
         }
 
+        private void ClearEdgeModels()
+        {
+            foreach (var e in _edgeModels) View3D.Items.Remove(e);
+            _edgeModels.Clear();
+        }
+
+        private void ShowTriangulationMenuItem_Click(object sender, RoutedEventArgs e)
+        {
+            bool show = ShowTriangulationMenuItem.IsChecked;
+            foreach (var t in _triangulations)
+            {
+                if (t.Model != null)
+                    t.Model.RenderWireframe = show;
+            }
+            // Show BRep edges when triangulation is hidden, hide them when triangulation is shown
+            foreach (var em in _edgeModels)
+                em.IsRendering = !show;
+        }
+
         private void LoadStepToViewport(string path)
         {
-            // Remove previously imported triangulations from viewport
+            // Remove previously imported triangulations and edges from viewport
             foreach (var t in _triangulations)
             {
                 if (t.Model != null) View3D.Items.Remove(t.Model);
             }
             _triangulations.Clear();
+            ClearEdgeModels();
 
             // Initialize OCCT native DLL paths
             OcctConfiguration.Configure();
@@ -261,25 +283,79 @@ namespace GML_WPF
             {
                 Geometry = meshGeom,
                 Material = Hx.PhongMaterials.Gray,
-                RenderWireframe = true,
-                WireframeColor = Colors.Lime
+                RenderWireframe = ShowTriangulationMenuItem.IsChecked,
+                WireframeColor = Colors.Lime,
+                DepthBias = 1
             };
             model.Transform = tri.Transform;
             tri.Model = model;
 
             View3D.Items.Add(model);
             _triangulations.Add(tri);
+
+            // ===== Extract BRep edges and display as lines =====
+            var linePositions = new HT.Vector3Collection();
+            var lineIndices = new HT.IntCollection();
+
+            var edgeExplorer = new Occt.TopExp_Explorer(shape, Occt.TopAbs_ShapeEnum.TopAbs_EDGE);
+            while (edgeExplorer.More)
+            {
+                var edge = (Occt.TopoDS_Edge)edgeExplorer.Current;
+                var edgeLoc = new Occt.TopLoc_Location();
+                var polygon = Occt.BRep_Tool.Polygon3D(edge, out edgeLoc);
+                if (polygon != null)
+                {
+                    var edgeTrsf = edgeLoc.IsIdentity ? null : edgeLoc.Transformation;
+                    int nbNodes = polygon.NbNodes;
+                    int baseIdx = linePositions.Count;
+                    var nodes = polygon.Nodes;
+                    for (int i = 1; i <= nbNodes; i++)
+                    {
+                        var pt = nodes[i];
+                        if (edgeTrsf != null)
+                            pt.Transform(edgeTrsf);
+                        linePositions.Add(new Vector3((float)pt.X, (float)pt.Y, (float)pt.Z));
+                    }
+                    // Add line segment indices (pairs of consecutive vertices)
+                    for (int i = 0; i < nbNodes - 1; i++)
+                    {
+                        lineIndices.Add(baseIdx + i);
+                        lineIndices.Add(baseIdx + i + 1);
+                    }
+                }
+                edgeExplorer.Next();
+            }
+
+            if (linePositions.Count > 0)
+            {
+                var lineGeom = new HxSharpDX.LineGeometry3D
+                {
+                    Positions = linePositions,
+                    Indices = lineIndices
+                };
+                var lineModel = new Hx.LineGeometryModel3D
+                {
+                    Geometry = lineGeom,
+                    Color = Colors.White,
+                    Thickness = 5,
+                    DepthBias = -100
+                };
+                View3D.Items.Add(lineModel);
+                _edgeModels.Add(lineModel);
+            }
+
             MarkKdDirty();
         }
 
         private void LoadObjToViewport(string path)
         {
-            // Remove previously imported triangulations from viewport (keep the sample cube)
+            // Remove previously imported triangulations and edges from viewport
             foreach (var t in _triangulations)
             {
                 if (t.Model != null) View3D.Items.Remove(t.Model);
             }
             _triangulations.Clear();
+            ClearEdgeModels();
 
             var context = new AssimpContext();
             var scene = context.ImportFile(path, PostProcessSteps.Triangulate | PostProcessSteps.JoinIdenticalVertices);
