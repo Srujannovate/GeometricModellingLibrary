@@ -124,17 +124,21 @@ namespace GML_WPF
             var dlg = new OpenFileDialog
             {
                 Title = "Open 3D Model",
-                Filter = "Wavefront OBJ (*.obj)|*.obj|All files (*.*)|*.*"
+                Filter = "3D Models (*.obj;*.step;*.stp)|*.obj;*.step;*.stp|Wavefront OBJ (*.obj)|*.obj|STEP Files (*.step;*.stp)|*.step;*.stp|All files (*.*)|*.*"
             };
             if (dlg.ShowDialog(this) == true)
             {
                 try
                 {
-                    LoadObjToViewport(dlg.FileName);
+                    var ext = Path.GetExtension(dlg.FileName).ToLowerInvariant();
+                    if (ext == ".step" || ext == ".stp")
+                        LoadStepToViewport(dlg.FileName);
+                    else
+                        LoadObjToViewport(dlg.FileName);
                 }
                 catch (Exception ex)
                 {
-                    MessageBox.Show(this, ex.Message, "Failed to load OBJ", MessageBoxButton.OK, MessageBoxImage.Error);
+                    MessageBox.Show(this, ex.Message, "Failed to load model", MessageBoxButton.OK, MessageBoxImage.Error);
                 }
             }
         }
@@ -159,6 +163,113 @@ namespace GML_WPF
             {
                 MessageBox.Show(this, "No nearest point found (tree empty).", "KD-Tree Nearest");
             }
+        }
+
+        private void LoadStepToViewport(string path)
+        {
+            // Remove previously imported triangulations from viewport
+            foreach (var t in _triangulations)
+            {
+                if (t.Model != null) View3D.Items.Remove(t.Model);
+            }
+            _triangulations.Clear();
+
+            // Initialize OCCT native DLL paths
+            OcctConfiguration.Configure();
+
+            // Read the STEP file
+            var reader = new Occt.STEPControl_Reader();
+            var status = reader.ReadFile(path);
+            if (status != Occt.IFSelect_ReturnStatus.IFSelect_RetDone)
+                throw new InvalidOperationException($"Failed to read STEP file: {Path.GetFileName(path)} (status={status})");
+
+            reader.TransferRoots();
+            var shape = reader.OneShape();
+            if (shape == null || shape.IsNull)
+                throw new InvalidOperationException($"No geometry found in: {Path.GetFileName(path)}");
+
+            // Tessellate the BRep shape into triangulated faces
+            var mesher = new Occt.BRepMesh_IncrementalMesh(shape, 0.1, false, 0.5, true);
+
+            // Collect positions and indices from all faces into a single Triangulation
+            var allPositions = new List<Vector3>();
+            var allIndices = new List<int>();
+
+            var explorer = new Occt.TopExp_Explorer(shape, Occt.TopAbs_ShapeEnum.TopAbs_FACE);
+            while (explorer.More)
+            {
+                var face = (Occt.TopoDS_Face)explorer.Current;
+                var location = new Occt.TopLoc_Location();
+                var poly = Occt.BRep_Tool.Triangulation(face, out location);
+                if (poly != null)
+                {
+                    int vertexOffset = allPositions.Count;
+                    var trsf = location.IsIdentity ? null : location.Transformation;
+
+                    // Add positions
+                    for (int i = 1; i <= poly.NbNodes; i++)
+                    {
+                        var pt = poly.Node(i);
+                        if (trsf != null)
+                            pt.Transform(trsf);
+                        allPositions.Add(new Vector3((float)pt.X, (float)pt.Y, (float)pt.Z));
+                    }
+
+                    // Add triangle indices, respecting face orientation
+                    bool reversed = face.Orientation == Occt.TopAbs_Orientation.TopAbs_REVERSED;
+                    for (int i = 1; i <= poly.NbTriangles; i++)
+                    {
+                        var triangle = poly.Triangle(i);
+                        int n1 = 0, n2 = 0, n3 = 0;
+                        triangle.Get(out n1, out n2, out n3);
+                        // OCCT uses 1-based indices
+                        if (reversed)
+                        {
+                            allIndices.Add(vertexOffset + n1 - 1);
+                            allIndices.Add(vertexOffset + n3 - 1);
+                            allIndices.Add(vertexOffset + n2 - 1);
+                        }
+                        else
+                        {
+                            allIndices.Add(vertexOffset + n1 - 1);
+                            allIndices.Add(vertexOffset + n2 - 1);
+                            allIndices.Add(vertexOffset + n3 - 1);
+                        }
+                    }
+                }
+                explorer.Next();
+            }
+
+            if (allPositions.Count == 0)
+                throw new InvalidOperationException($"No triangulated faces found in: {Path.GetFileName(path)}");
+
+            // Create a Triangulation and add to viewport
+            var tri = new Triangulation();
+            tri.Positions = allPositions.ToArray();
+            tri.Indices = allIndices.ToArray();
+            ComputeLocalAabb(tri.Positions, out tri.LocalMin, out tri.LocalMax);
+            BuildGrid(tri);
+
+            var positions = new HT.Vector3Collection(tri.Positions);
+            var indices = new HT.IntCollection(tri.Indices);
+            var meshGeom = new HxSharpDX.MeshGeometry3D
+            {
+                Positions = positions,
+                Indices = indices
+            };
+            var model = new Hx.MeshGeometryModel3D
+            {
+                Geometry = meshGeom,
+                Material = Hx.PhongMaterials.Gray,
+                RenderWireframe = true,
+                WireframeColor = Colors.Lime
+            };
+            model.Transform = tri.Transform;
+            tri.Model = model;
+
+            View3D.Items.Add(model);
+            _triangulations.Add(tri);
+            MarkKdDirty();
         }
 
         private void LoadObjToViewport(string path)

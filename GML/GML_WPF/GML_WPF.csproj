@@ -13,6 +13,7 @@
     <PackageReference Include="HelixToolkit.Wpf.SharpDX" Version="3.1.2" />
     <PackageReference Include="HelixToolkit.Geometry" Version="3.1.2" />
     <PackageReference Include="AssimpNet" Version="5.0.0-beta1" />
+    <PackageReference Include="Occt.NET" Version="7.9.0" />
   </ItemGroup>
 
   <ItemGroup>
@@ -36,6 +37,14 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
   </ItemGroup>
+
+  <!-- Post-build: copy Ijwhost.dll required for Occt.NET (C++/CLI) assembly loading on .NET Core+ -->
+  <Target Name="CopyIjwhost" AfterTargets="Build">
+    <PropertyGroup>
+      <OcctLibDir>$([System.IO.Path]::GetFullPath('$(NuGetPackageRoot)occt.net\7.9.0\lib\net8.0-windows7.0\x64'))</OcctLibDir>
+    </PropertyGroup>
+    <Copy SourceFiles="$(OcctLibDir)\Ijwhost.dll" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" Condition="Exists('$(OcctLibDir)\Ijwhost.dll')" />
+  </Target>
 
   <!-- Post-build: copy native GML_Library.dll into the managed output folder -->
   <Target Name="CopyGmlNative" AfterTargets="Build">
