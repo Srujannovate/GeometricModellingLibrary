@@ -337,7 +337,7 @@ namespace GML_WPF
                 {
                     Geometry = lineGeom,
                     Color = Colors.White,
-                    Thickness = 5,
+                    Thickness = 1.5,
                     DepthBias = -100
                 };
                 View3D.Items.Add(lineModel);
