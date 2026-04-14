@@ -13,11 +13,11 @@
     <PackageReference Include="HelixToolkit.Wpf.SharpDX" Version="3.1.2" />
     <PackageReference Include="HelixToolkit.Geometry" Version="3.1.2" />
     <PackageReference Include="AssimpNet" Version="5.0.0-beta1" />
-    <PackageReference Include="Occt.NET" Version="7.9.0" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\GML.Interop\GML.Interop.csproj" />
+    <ProjectReference Include="..\GMLModel\GMLModel.csproj" />
   </ItemGroup>
 
   <!-- Ensure the native DLL is copied next to the WPF exe for Debug/Release builds (x64 native library). -->
