@@ -193,7 +193,7 @@ namespace GML_WPF
             ClearEdgeModels();
 
             STEPModelLoader loader = new STEPModelLoader();
-            loader.LoadStepToViewport(path, /*_triangulations,*/
+            loader.LoadStepToViewport(path, 
                 out var allIndices, 
                 out var allPositions, 
                 out var lineIndices, 
@@ -260,46 +260,20 @@ namespace GML_WPF
             _triangulations.Clear();
             ClearEdgeModels();
 
-            var context = new AssimpContext();
-            var scene = context.ImportFile(path, PostProcessSteps.Triangulate | PostProcessSteps.JoinIdenticalVertices);
-            if (scene == null || !scene.HasMeshes)
-                throw new InvalidOperationException($"No meshes found in: {Path.GetFileName(path)}");
+            ObjModelLoader loader = new ObjModelLoader();
+            loader.LoadObjToViewport(path, 
+                out var positions, 
+                out var indices);
 
-            foreach (var mesh in scene.Meshes)
+            for (int indx = 0; indx < positions.Count; indx++)
             {
                 // Keep a triangulation copy
                 var tri = new Triangulation();
-                var posList = new List<Vector3>(mesh.VertexCount);
-                for (int i = 0; i < mesh.VertexCount; i++)
-                {
-                    var v = mesh.Vertices[i];
-                    posList.Add(new Vector3(v.X, v.Y, v.Z));
-                }
-                tri.Positions = posList.ToArray();
-                // Compute local-space AABB
-                ComputeLocalAabb(tri.Positions, out tri.LocalMin, out tri.LocalMax);
-                var idx = new List<int>(mesh.FaceCount * 3);
-                foreach (var f in mesh.Faces)
-                {
-                    if (f.IndexCount == 3)
-                    {
-                        idx.Add(f.Indices[0]);
-                        idx.Add(f.Indices[1]);
-                        idx.Add(f.Indices[2]);
-                    }
-                }
-                tri.Indices = idx.ToArray();
 
-                // Build uniform grid accelerator
-                BuildGrid(tri);
-
-                // Build Helix geometry for rendering from the triangulation
-                var positions = new HT.Vector3Collection(tri.Positions);
-                var indices = new HT.IntCollection(tri.Indices);
                 var meshGeom = new HxSharpDX.MeshGeometry3D
                 {
-                    Positions = positions,
-                    Indices = indices
+                    Positions = positions[indx],
+                    Indices = indices[indx]
                 };
                 var model = new Hx.MeshGeometryModel3D
                 {
@@ -308,13 +282,24 @@ namespace GML_WPF
                     RenderWireframe = true,
                     WireframeColor = Colors.Lime
                 };
+
+                tri.Positions = positions[indx].ToArray();
+                tri.Indices = indices[indx].ToArray();
+
                 // Share the Transform3DGroup instance with the triangulation
                 model.Transform = tri.Transform;
                 tri.Model = model;
 
+                // Compute local-space AABB
+                ComputeLocalAabb(tri.Positions, out tri.LocalMin, out tri.LocalMax);
+                
+                // Build uniform grid accelerator
+                BuildGrid(tri);
+
                 View3D.Items.Add(model);
                 _triangulations.Add(tri);
             }
+
             MarkKdDirty();
         }
 

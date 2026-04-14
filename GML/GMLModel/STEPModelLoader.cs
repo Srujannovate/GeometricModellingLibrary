@@ -5,7 +5,7 @@ namespace GMLModel
 {
     public class STEPModelLoader
     {
-        public void LoadStepToViewport(string path, /*List<Triangulation> _triangulations,*/
+        public void LoadStepToViewport(string path,
             out List<int> allIndices, 
             out List<Vector3> allPositions, 
             out HT.IntCollection lineIndices, 

@@ -12,7 +12,6 @@
   <ItemGroup>
     <PackageReference Include="HelixToolkit.Wpf.SharpDX" Version="3.1.2" />
     <PackageReference Include="HelixToolkit.Geometry" Version="3.1.2" />
-    <PackageReference Include="AssimpNet" Version="5.0.0-beta1" />
   </ItemGroup>
 
   <ItemGroup>
