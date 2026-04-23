@@ -1,10 +1,30 @@
-﻿using System.Numerics;
+using System.Numerics;
+using GMLModel.Pmi;
 using HT = HelixToolkit;
 
 namespace GMLModel
 {
     public class STEPModelLoader
     {
+        /// <summary>
+        /// Loads geometry plus PMI (dimensions/tolerances/notes/views) using the
+        /// OCCT XDE/CAF pipeline.
+        /// </summary>
+        public PmiModel LoadStepToViewport(string path,
+            out List<int> allIndices,
+            out List<Vector3> allPositions,
+            out HT.IntCollection lineIndices,
+            out HT.Vector3Collection linePositions,
+            bool readPmi)
+        {
+            if (readPmi)
+            {
+                return new StepPmiLoader().Load(path, out allIndices, out allPositions, out lineIndices, out linePositions);
+            }
+            LoadStepToViewport(path, out allIndices, out allPositions, out lineIndices, out linePositions);
+            return new PmiModel();
+        }
+
         public void LoadStepToViewport(string path,
             out List<int> allIndices, 
             out List<Vector3> allPositions, 

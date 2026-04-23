@@ -27,6 +27,12 @@
                 <Separator />
                 <MenuItem Header="Show _Triangulation" Name="ShowTriangulationMenuItem" IsCheckable="True" IsChecked="False" Click="ShowTriangulationMenuItem_Click" />
             </MenuItem>
+            <MenuItem Header="_PMI">
+                <MenuItem Header="Show _PMI" x:Name="ShowPmiMenuItem" IsCheckable="True" IsChecked="True" Click="ShowPmiMenuItem_Click" />
+                <MenuItem Header="_Saved Views" x:Name="SavedViewsMenu" />
+                <Separator />
+                <MenuItem Header="_List Annotations..." x:Name="ListPmiMenuItem" Click="ListPmiMenuItem_Click" />
+            </MenuItem>
             <MenuItem Header="_Transform">
                 <MenuItem Header="Translate..." Click="TranslateMenuItem_Click" />
                 <MenuItem Header="Rotate..." Click="RotateMenuItem_Click" />

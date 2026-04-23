@@ -1,9 +1,12 @@
-﻿using Assimp;
+using Assimp;
 using GMLModel;
+using GMLModel.Pmi;
+using GML_WPF.Pmi;
 using Microsoft.Win32;
 using System.IO;
 using System.Numerics;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Media3D;
@@ -47,6 +50,12 @@ namespace GML_WPF
         private readonly List<Triangulation> _triangulations = new();
         // Edge line models from STEP BRep (cleared on new load)
         private readonly List<Hx.LineGeometryModel3D> _edgeModels = new();
+        // PMI annotation scene elements (cleared on new load)
+        private readonly List<Hx.Element3D> _pmiModels = new();
+        // Per-annotation element groups (id -> elements) for saved-view visibility
+        private readonly Dictionary<string, List<Hx.Element3D>> _pmiById = new();
+        // Parsed PMI model for the currently loaded STEP file
+        private PmiModel? _pmi;
         // KD-tree cache over ALL loaded models (combined)
         private IntPtr _kdTree = IntPtr.Zero;
         private int _kdPointCount = 0;
@@ -192,12 +201,14 @@ namespace GML_WPF
 
             ClearEdgeModels();
 
+            ClearPmiModels();
             STEPModelLoader loader = new STEPModelLoader();
-            loader.LoadStepToViewport(path, 
-                out var allIndices, 
-                out var allPositions, 
-                out var lineIndices, 
-                out var linePositions);
+            _pmi = loader.LoadStepToViewport(path,
+                out var allIndices,
+                out var allPositions,
+                out var lineIndices,
+                out var linePositions,
+                readPmi: true);
 
             // Create a Triangulation and add to viewport
             var tri = new Triangulation();
@@ -246,8 +257,88 @@ namespace GML_WPF
             View3D.Items.Add(lineModel);
             _edgeModels.Add(lineModel);
 
+            RenderPmi(_pmi);
+            RebuildSavedViewsMenu();
 
             MarkKdDirty();
+        }
+
+        // ===== PMI rendering / saved-view handling =====
+        private void ClearPmiModels()
+        {
+            foreach (var e in _pmiModels) View3D.Items.Remove(e);
+            _pmiModels.Clear();
+            _pmiById.Clear();
+        }
+
+        private void RenderPmi(PmiModel? pmi)
+        {
+            if (pmi == null || pmi.IsEmpty) return;
+            double scale = pmi.LengthUnitMm; // coords stored in STEP units; convert to mm scene units
+            foreach (var ann in pmi.Annotations)
+            {
+                var elems = PmiPrimitiveBuilders.Build(ann, scale);
+                if (elems.Count == 0) continue;
+                var list = new List<Hx.Element3D>(elems.Count);
+                foreach (var e in elems)
+                {
+                    e.IsRendering = ShowPmiMenuItem.IsChecked;
+                    View3D.Items.Add(e);
+                    _pmiModels.Add(e);
+                    list.Add(e);
+                }
+                _pmiById[ann.Id] = list;
+            }
+        }
+
+        private void RebuildSavedViewsMenu()
+        {
+            SavedViewsMenu.Items.Clear();
+            if (_pmi == null || _pmi.SavedViews.Count == 0)
+            {
+                var none = new MenuItem { Header = "(none)", IsEnabled = false };
+                SavedViewsMenu.Items.Add(none);
+                return;
+            }
+            foreach (var sv in _pmi.SavedViews)
+            {
+                var mi = new MenuItem { Header = string.IsNullOrWhiteSpace(sv.Name) ? "View" : sv.Name, Tag = sv };
+                mi.Click += (_, __) => ApplySavedView((PmiSavedView)mi.Tag);
+                SavedViewsMenu.Items.Add(mi);
+            }
+        }
+
+        private void ApplySavedView(PmiSavedView sv)
+        {
+            _camera.Position = new Point3D(sv.Eye.X, sv.Eye.Y, sv.Eye.Z);
+            _camera.LookDirection = new System.Windows.Media.Media3D.Vector3D(sv.LookDir.X, sv.LookDir.Y, sv.LookDir.Z);
+            _camera.UpDirection = new System.Windows.Media.Media3D.Vector3D(sv.UpDir.X, sv.UpDir.Y, sv.UpDir.Z);
+            _camera.FieldOfView = sv.FovDeg;
+            if (sv.VisibleAnnotationIds.Count > 0)
+            {
+                foreach (var kv in _pmiById)
+                {
+                    bool visible = sv.VisibleAnnotationIds.Contains(kv.Key) && ShowPmiMenuItem.IsChecked;
+                    foreach (var e in kv.Value) e.IsRendering = visible;
+                }
+            }
+        }
+
+        private void ShowPmiMenuItem_Click(object sender, RoutedEventArgs e)
+        {
+            bool show = ShowPmiMenuItem.IsChecked;
+            foreach (var el in _pmiModels) el.IsRendering = show;
+        }
+
+        private void ListPmiMenuItem_Click(object sender, RoutedEventArgs e)
+        {
+            if (_pmi == null || _pmi.Annotations.Count == 0)
+            {
+                MessageBox.Show(this, "No PMI annotations loaded.", "PMI", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+            var w = new PmiListWindow(_pmi.Annotations) { Owner = this };
+            w.ShowDialog();
         }
 
         private void LoadObjToViewport(string path)
@@ -259,6 +350,9 @@ namespace GML_WPF
             }
             _triangulations.Clear();
             ClearEdgeModels();
+            ClearPmiModels();
+            _pmi = null;
+            RebuildSavedViewsMenu();
 
             ObjModelLoader loader = new ObjModelLoader();
             loader.LoadObjToViewport(path, 
