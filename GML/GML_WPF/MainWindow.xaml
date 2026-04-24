@@ -53,20 +53,53 @@
         </Menu>
 
         <!-- DirectX-backed 3D viewport (mouse: rotate/pan/zoom) -->
-        <ht:Viewport3DX Grid.Row="1"
-                        x:Name="View3D"
-                        ShowCoordinateSystem="True"
-                        Background="Black">
-            <!-- Simple lights so models are visible when added later -->
-            <ht:DirectionalLight3D Color="#FFFFFFFF" Direction="-1,-1,-2" />
-            <ht:AmbientLight3D Color="#404040FF" />
+        <Grid Grid.Row="1">
+            <ht:Viewport3DX x:Name="View3D"
+                            ShowCoordinateSystem="True"
+                            Background="Black">
+                <!-- Simple lights so models are visible when added later -->
+                <ht:DirectionalLight3D Color="#FFFFFFFF" Direction="-1,-1,-2" />
+                <ht:AmbientLight3D Color="#404040FF" />
+            </ht:Viewport3DX>
 
-        </ht:Viewport3DX>
+            <!-- PMI info popup (shown on selection) -->
+            <Border x:Name="PmiInfoPanel"
+                    Visibility="Collapsed"
+                    Background="#CC222222"
+                    BorderBrush="Yellow"
+                    BorderThickness="1"
+                    Padding="8"
+                    CornerRadius="4"
+                    HorizontalAlignment="Left"
+                    VerticalAlignment="Top"
+                    Margin="10"
+                    MinWidth="200"
+                    MaxWidth="340">
+                <StackPanel>
+                    <TextBlock x:Name="PmiInfoTitle" FontWeight="Bold" Foreground="Yellow" FontSize="13" />
+                    <TextBlock x:Name="PmiInfoKind"  Foreground="LightGray" FontStyle="Italic" Margin="0,2,0,4" />
+                    <TextBlock x:Name="PmiInfoText"  Foreground="White" TextWrapping="Wrap" />
+                    <TextBlock x:Name="PmiInfoTol"   Foreground="#CCCCFF" TextWrapping="Wrap" Margin="0,4,0,0" />
+                    <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                        <Button Content="Zoom To"  Click="PmiZoomToButton_Click"  Margin="0,0,6,0" Padding="6,2" />
+                        <Button Content="Copy"     Click="PmiCopyButton_Click"    Margin="0,0,6,0" Padding="6,2" />
+                        <Button Content="Close"    Click="PmiCloseButton_Click"   Padding="6,2" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+        </Grid>
 
         <!-- Bottom Status Bar -->
         <StatusBar Grid.Row="2">
             <StatusBarItem>
                 <TextBlock Text="Ready" />
+            </StatusBarItem>
+            <Separator />
+            <StatusBarItem>
+                <TextBlock Text="Selected PMI:" />
+            </StatusBarItem>
+            <StatusBarItem>
+                <TextBlock x:Name="PmiStatusText" Text="(none)" Foreground="DarkCyan" />
             </StatusBarItem>
             <Separator />
             <StatusBarItem>

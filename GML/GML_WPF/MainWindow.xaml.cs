@@ -54,8 +54,18 @@ namespace GML_WPF
         private readonly List<Hx.Element3D> _pmiModels = new();
         // Per-annotation element groups (id -> elements) for saved-view visibility
         private readonly Dictionary<string, List<Hx.Element3D>> _pmiById = new();
+        // Reverse lookup: element -> owning annotation (for hit testing)
+        private readonly Dictionary<Hx.Element3D, PmiAnnotation> _pmiByElement = new();
         // Parsed PMI model for the currently loaded STEP file
         private PmiModel? _pmi;
+        // Currently selected annotation + saved colors to restore
+        private PmiAnnotation? _selectedPmi;
+        private readonly Dictionary<Hx.Element3D, Color> _pmiOriginalColors = new();
+        // Track press position so rotate-vs-click can be distinguished
+        private System.Windows.Point _mouseDownPos;
+        private bool _mouseDragged;
+        // Open PmiListWindow reference (to sync selection)
+        private PmiListWindow? _pmiListWindow;
         // KD-tree cache over ALL loaded models (combined)
         private IntPtr _kdTree = IntPtr.Zero;
         private int _kdPointCount = 0;
@@ -73,6 +83,13 @@ namespace GML_WPF
             // Bind gestures explicitly: left=rotate, right=pan
             View3D.InputBindings.Add(new MouseBinding(Hx.ViewportCommands.Rotate, new MouseGesture(MouseAction.LeftClick)));
             View3D.InputBindings.Add(new MouseBinding(Hx.ViewportCommands.Pan, new MouseGesture(MouseAction.RightClick)));
+
+            // PMI interaction: click = select, double click = zoom, right click = context menu
+            View3D.PreviewMouseLeftButtonDown  += View3D_PreviewMouseLeftButtonDown;
+            View3D.PreviewMouseMove            += View3D_PreviewMouseMove;
+            View3D.PreviewMouseLeftButtonUp    += View3D_PreviewMouseLeftButtonUp;
+            View3D.MouseDoubleClick            += View3D_MouseDoubleClick;
+            View3D.MouseRightButtonUp          += View3D_MouseRightButtonUp;
 
             // Add a cube to the scene by constructing geometry directly
             var positions = new HT.Vector3Collection
@@ -266,29 +283,307 @@ namespace GML_WPF
         // ===== PMI rendering / saved-view handling =====
         private void ClearPmiModels()
         {
+            ClearPmiSelection();
             foreach (var e in _pmiModels) View3D.Items.Remove(e);
             _pmiModels.Clear();
             _pmiById.Clear();
+            _pmiByElement.Clear();
+            _pmiOriginalColors.Clear();
+            PmiInfoPanel.Visibility = Visibility.Collapsed;
+            PmiStatusText.Text = "(none)";
         }
 
         private void RenderPmi(PmiModel? pmi)
         {
             if (pmi == null || pmi.IsEmpty) return;
             double scale = pmi.LengthUnitMm; // coords stored in STEP units; convert to mm scene units
+
+            // Compute a scene anchor so annotations without a 3D attach point
+            // (e.g. extracted notes/tolerances where the reflective loader
+            // couldn't resolve a geometric point) stack above the model and
+            // remain visible instead of collapsing to (0,0,0).
+            Vector3 anchorBase;
+            float stepY;
+            if (TryGetSceneAabb(out var smin, out var smax))
+            {
+                anchorBase = new Vector3(smax.X + (smax.X - smin.X) * 0.15f,
+                                         smax.Y,
+                                         (smin.Z + smax.Z) * 0.5f);
+                stepY = Math.Max((smax.Y - smin.Y) * 0.08f, 2f);
+            }
+            else
+            {
+                anchorBase = new Vector3(20f, 0f, 0f);
+                stepY = 5f;
+            }
+
+            int i = 0;
             foreach (var ann in pmi.Annotations)
             {
-                var elems = PmiPrimitiveBuilders.Build(ann, scale);
+                // Stagger along Y so stacked fallback anchors don't overlap.
+                var fallback = new Vector3(anchorBase.X,
+                                           anchorBase.Y - i * stepY,
+                                           anchorBase.Z);
+                i++;
+
+                var elems = PmiPrimitiveBuilders.Build(ann, scale, fallback);
                 if (elems.Count == 0) continue;
                 var list = new List<Hx.Element3D>(elems.Count);
                 foreach (var e in elems)
                 {
                     e.IsRendering = ShowPmiMenuItem.IsChecked;
+                    e.IsHitTestVisible = true;
                     View3D.Items.Add(e);
                     _pmiModels.Add(e);
+                    _pmiByElement[e] = ann;
                     list.Add(e);
                 }
                 _pmiById[ann.Id] = list;
             }
+        }
+
+        // ===== PMI interaction (hit test, select, highlight, zoom, context menu) =====
+        private void View3D_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+        {
+            _mouseDownPos = e.GetPosition(View3D);
+            _mouseDragged = false;
+        }
+
+        private void View3D_PreviewMouseMove(object sender, MouseEventArgs e)
+        {
+            if (e.LeftButton != MouseButtonState.Pressed) return;
+            var p = e.GetPosition(View3D);
+            if (Math.Abs(p.X - _mouseDownPos.X) > 3 || Math.Abs(p.Y - _mouseDownPos.Y) > 3)
+                _mouseDragged = true;
+        }
+
+        private void View3D_PreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+        {
+            if (_mouseDragged) return;
+            var pos = e.GetPosition(View3D);
+            var ann = HitTestPmi(pos);
+            if (ann != null)
+            {
+                SelectPmi(ann);
+                e.Handled = true;
+            }
+            else
+            {
+                ClearPmiSelection();
+            }
+        }
+
+        private void View3D_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+        {
+            if (e.ChangedButton != MouseButton.Left) return;
+            var pos = e.GetPosition(View3D);
+            var ann = HitTestPmi(pos);
+            if (ann != null)
+            {
+                SelectPmi(ann);
+                ZoomToAnnotation(ann);
+                e.Handled = true;
+            }
+        }
+
+        private void View3D_MouseRightButtonUp(object sender, MouseButtonEventArgs e)
+        {
+            var pos = e.GetPosition(View3D);
+            var ann = HitTestPmi(pos);
+            if (ann == null) return;
+
+            SelectPmi(ann);
+            var menu = new ContextMenu();
+            var mDetails = new MenuItem { Header = "Show Details" };
+            mDetails.Click += (_, __) => ShowPmiPopup(ann);
+            var mZoom = new MenuItem { Header = "Zoom To" };
+            mZoom.Click += (_, __) => ZoomToAnnotation(ann);
+            var mCopy = new MenuItem { Header = "Copy Text" };
+            mCopy.Click += (_, __) => CopyAnnotationText(ann);
+            var mHide = new MenuItem { Header = "Hide This Annotation" };
+            mHide.Click += (_, __) => { if (_pmiById.TryGetValue(ann.Id, out var els)) foreach (var el in els) el.IsRendering = false; };
+            menu.Items.Add(mDetails);
+            menu.Items.Add(mZoom);
+            menu.Items.Add(mCopy);
+            menu.Items.Add(new Separator());
+            menu.Items.Add(mHide);
+            menu.IsOpen = true;
+            e.Handled = true;
+        }
+
+        private PmiAnnotation? HitTestPmi(System.Windows.Point pos)
+        {
+            try
+            {
+                // HelixToolkit 3.x FindHits lives on ViewportExtensions (extension method) and the
+                // HitTestResult type is in HelixToolkit.SharpDX, not HelixToolkit.Wpf.SharpDX.
+                // Use reflection so we tolerate minor API drift between versions.
+                var vptType = View3D.GetType();
+                var vptExt  = vptType.Assembly.GetType("HelixToolkit.Wpf.SharpDX.ViewportExtensions");
+                System.Collections.IList? hits = null;
+                if (vptExt != null)
+                {
+                    var method = vptExt.GetMethods(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static)
+                        .FirstOrDefault(m => m.Name == "FindHits" && m.GetParameters().Length >= 2);
+                    if (method != null)
+                    {
+                        var hitsArg = Activator.CreateInstance(typeof(List<>).MakeGenericType(
+                            method.GetParameters()[1].ParameterType.IsByRef
+                                ? method.GetParameters()[1].ParameterType.GetElementType()!.GetGenericArguments()[0]
+                                : typeof(object)));
+                        var args = new object?[method.GetParameters().Length];
+                        args[0] = pos;
+                        args[1] = hitsArg;
+                        method.Invoke(View3D, args);
+                        hits = args[1] as System.Collections.IList;
+                    }
+                }
+                if (hits != null)
+                {
+                    foreach (var h in hits)
+                    {
+                        var modelHit = h?.GetType().GetProperty("ModelHit")?.GetValue(h);
+                        if (modelHit is Hx.Element3D el && _pmiByElement.TryGetValue(el, out var ann))
+                            return ann;
+                        // Some HelixToolkit builds wrap the element inside a SceneNode.WrapperSource
+                        var wrapperProp = modelHit?.GetType().GetProperty("WrapperSource");
+                        if (wrapperProp?.GetValue(modelHit) is Hx.Element3D wEl && _pmiByElement.TryGetValue(wEl, out var wAnn))
+                            return wAnn;
+                    }
+                }
+            }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[PMI hit] {ex.Message}"); }
+            return null;
+        }
+
+        private void SelectPmi(PmiAnnotation ann)
+        {
+            if (_selectedPmi == ann) { ShowPmiPopup(ann); return; }
+            ClearPmiSelection();
+            _selectedPmi = ann;
+            if (_pmiById.TryGetValue(ann.Id, out var els))
+            {
+                foreach (var e in els) ApplyHighlight(e, true);
+            }
+            ShowPmiPopup(ann);
+            _pmiListWindow?.SyncSelectionFromOutside(ann);
+        }
+
+        private void ClearPmiSelection()
+        {
+            if (_selectedPmi == null) return;
+            if (_pmiById.TryGetValue(_selectedPmi.Id, out var els))
+            {
+                foreach (var e in els) ApplyHighlight(e, false);
+            }
+            _selectedPmi = null;
+            PmiInfoPanel.Visibility = Visibility.Collapsed;
+            PmiStatusText.Text = "(none)";
+        }
+
+        private void ApplyHighlight(Hx.Element3D el, bool highlight)
+        {
+            if (el is Hx.LineGeometryModel3D line)
+            {
+                if (highlight)
+                {
+                    if (!_pmiOriginalColors.ContainsKey(el)) _pmiOriginalColors[el] = line.Color;
+                    line.Color = Colors.Yellow;
+                    line.Thickness = Math.Max(line.Thickness, 3.0);
+                }
+                else if (_pmiOriginalColors.TryGetValue(el, out var c))
+                {
+                    line.Color = c;
+                    line.Thickness = 1.5;
+                    _pmiOriginalColors.Remove(el);
+                }
+            }
+            else if (el is Hx.BillboardTextModel3D billboard)
+            {
+                // Grow the billboard a bit so users see the selection
+                try
+                {
+                    if (billboard.Geometry is HxSharpDX.BillboardSingleText3D b && b.TextInfo != null)
+                    {
+                        if (highlight)
+                        {
+                            if (!_pmiOriginalColors.ContainsKey(el)) _pmiOriginalColors[el] = Colors.White; // marker
+                            b.TextInfo.Scale = 1.5f;
+                        }
+                        else
+                        {
+                            b.TextInfo.Scale = 1.0f;
+                            _pmiOriginalColors.Remove(el);
+                        }
+                    }
+                }
+                catch { }
+            }
+        }
+
+        private void ShowPmiPopup(PmiAnnotation ann)
+        {
+            PmiInfoTitle.Text = ann.Id;
+            PmiInfoKind.Text  = ann.Kind.ToString();
+            PmiInfoText.Text  = string.IsNullOrWhiteSpace(ann.DisplayText) ? "(no text)" : ann.DisplayText;
+
+            string extra = ann switch
+            {
+                LinearDimension  ld  => $"Value: {ld.Value:0.###}   +{ld.PlusTol:0.###} / -{ld.MinusTol:0.###}",
+                AngularDimension ad  => $"Angle: {ad.ValueDeg:0.###}°   +{ad.PlusTol:0.###} / -{ad.MinusTol:0.###}",
+                RadialDimension  rd  => $"{(rd.IsDiameter ? "Diameter" : "Radius")}: {rd.Radius:0.###}   +{rd.PlusTol:0.###} / -{rd.MinusTol:0.###}",
+                GeometricTolerance gt => $"Symbol: {gt.FCF.Symbol}   Tol: {gt.FCF.ToleranceValue:0.###}   Modifier: {gt.FCF.Modifier}" +
+                                         (gt.FCF.DatumRefs.Length > 0 ? $"   Datums: {string.Join(" ", gt.FCF.DatumRefs)}" : ""),
+                Datum d              => $"Datum letter: {d.Letter}",
+                DatumTarget dt       => $"Datum target: {dt.Letter} ({dt.TargetId})",
+                SurfaceFinish sf     => $"Ra: {(sf.Ra?.ToString("0.###") ?? "?")}   {sf.Symbol}",
+                WeldSymbol ws        => ws.Text,
+                Note n               => n.Text,
+                _ => string.Empty,
+            };
+            PmiInfoTol.Text = extra;
+            PmiInfoTol.Visibility = string.IsNullOrEmpty(extra) ? Visibility.Collapsed : Visibility.Visible;
+            PmiInfoPanel.Visibility = Visibility.Visible;
+
+            PmiStatusText.Text = $"{ann.Id}  [{ann.Kind}]  {ann.DisplayText}";
+        }
+
+        private void ZoomToAnnotation(PmiAnnotation ann)
+        {
+            double scale = _pmi?.LengthUnitMm ?? 1.0;
+            var target = ann.AttachPoint != Vector3.Zero ? ann.AttachPoint : ann.TextPosition;
+            var world = new Point3D(target.X * scale, target.Y * scale, target.Z * scale);
+
+            // Maintain current look direction; place eye on the look-back ray at a small distance.
+            var dir = _camera.LookDirection;
+            var len = Math.Sqrt(dir.X * dir.X + dir.Y * dir.Y + dir.Z * dir.Z);
+            if (len < 1e-9) { dir = new System.Windows.Media.Media3D.Vector3D(0, 0, -1); len = 1; }
+            double dist = 30.0; // scene units away
+            _camera.Position = new Point3D(world.X - dir.X / len * dist,
+                                           world.Y - dir.Y / len * dist,
+                                           world.Z - dir.Z / len * dist);
+            _camera.LookDirection = new System.Windows.Media.Media3D.Vector3D(dir.X / len * dist,
+                                                                              dir.Y / len * dist,
+                                                                              dir.Z / len * dist);
+        }
+
+        private void CopyAnnotationText(PmiAnnotation ann)
+        {
+            try { Clipboard.SetText($"{ann.Id}\t{ann.Kind}\t{ann.DisplayText}"); } catch { }
+        }
+
+        // ----- PMI info-panel button handlers ----------------------------------------
+        private void PmiZoomToButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (_selectedPmi != null) ZoomToAnnotation(_selectedPmi);
+        }
+        private void PmiCopyButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (_selectedPmi != null) CopyAnnotationText(_selectedPmi);
+        }
+        private void PmiCloseButton_Click(object sender, RoutedEventArgs e)
+        {
+            ClearPmiSelection();
         }
 
         private void RebuildSavedViewsMenu()
@@ -337,8 +632,21 @@ namespace GML_WPF
                 MessageBox.Show(this, "No PMI annotations loaded.", "PMI", MessageBoxButton.OK, MessageBoxImage.Information);
                 return;
             }
-            var w = new PmiListWindow(_pmi.Annotations) { Owner = this };
-            w.ShowDialog();
+            if (_pmiListWindow == null || !_pmiListWindow.IsLoaded)
+            {
+                _pmiListWindow = new PmiListWindow(_pmi.Annotations) { Owner = this };
+                _pmiListWindow.AnnotationSelected += ann =>
+                {
+                    if (ann != null) SelectPmi(ann);
+                };
+                _pmiListWindow.AnnotationActivated += ann =>
+                {
+                    if (ann != null) { SelectPmi(ann); ZoomToAnnotation(ann); }
+                };
+                _pmiListWindow.Closed += (_, __) => _pmiListWindow = null;
+            }
+            _pmiListWindow.Show();
+            _pmiListWindow.Activate();
         }
 
         private void LoadObjToViewport(string path)
