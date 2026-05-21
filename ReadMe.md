@@ -33,12 +33,49 @@ All transform commands reference a body by name. Names are case-insensitive.
 | `list` | List all created bodies with their type and number of applied transforms. |
 | `delete <name>` | Remove a body from the scene. `remove` also works. |
 
-### Utility Commands
+### File Commands
 
 | Command | Description |
 |---|---|
+| `open [filepath]` | Open a 3D model file (`.obj`, `.step`, `.stp`). If no path is given, a file dialog appears. |
+| `import [filepath]` | Load and execute a command schema file (`.gml`, `.txt`). If no path is given, a file dialog appears. |
+
+### Application Commands
+
+| Command | Description |
+|---|---|
+| `exit` | Close the application. `quit` also works. |
 | `help` | Display a summary of all available commands. |
 | `clear` | Clear the command output area. |
+
+## Command Schema Files
+
+A schema file is a plain-text file (`.gml` or `.txt`) containing one command per line. When imported, all commands execute sequentially. This lets you define reusable scenes.
+
+- Empty lines are ignored.
+- Lines starting with `#` or `//` are treated as comments.
+- Every other line is executed as a normal command.
+
+**Example schema** (`scene.gml`):
+
+```
+# Build a simple scene
+create cube 2
+create cylinder 0.5 4
+create rectangle 4 1 2
+
+# Position the shapes
+translate Cube_1 -3,0,0
+translate Cylinder_1 0,0,0
+rotate Cylinder_1 90,1,0,0
+translate Rectangle_1 3,0,0
+```
+
+Load it with:
+
+```
+> import D:\scenes\scene.gml
+```
 
 ### Examples
 

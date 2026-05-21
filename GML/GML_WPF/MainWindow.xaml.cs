@@ -1609,6 +1609,16 @@ namespace GML_WPF
                 case "list":
                     HandleListCommand();
                     break;
+                case "open":
+                    HandleOpenCommand(parts);
+                    break;
+                case "import":
+                    HandleImportCommand(parts);
+                    break;
+                case "exit":
+                case "quit":
+                    Close();
+                    break;
                 case "clear":
                     CommandOutput.Text = "";
                     break;
@@ -1791,6 +1801,118 @@ namespace GML_WPF
             }
         }
 
+        private void HandleOpenCommand(string[] parts)
+        {
+            string? filePath = null;
+            if (parts.Length >= 2)
+            {
+                // Join remaining parts to support paths with spaces (quoted or not)
+                filePath = string.Join(' ', parts, 1, parts.Length - 1).Trim('"');
+            }
+            else
+            {
+                // No path given — show file dialog
+                var dlg = new OpenFileDialog
+                {
+                    Title = "Open 3D Model",
+                    Filter = "3D Models (*.obj;*.step;*.stp)|*.obj;*.step;*.stp|Wavefront OBJ (*.obj)|*.obj|STEP Files (*.step;*.stp)|*.step;*.stp|All files (*.*)|*.*"
+                };
+                if (dlg.ShowDialog(this) == true)
+                    filePath = dlg.FileName;
+            }
+
+            if (string.IsNullOrWhiteSpace(filePath))
+            {
+                AppendOutput("  Cancelled.");
+                return;
+            }
+            if (!File.Exists(filePath))
+            {
+                AppendOutput($"  File not found: {filePath}");
+                return;
+            }
+
+            try
+            {
+                var ext = Path.GetExtension(filePath).ToLowerInvariant();
+                if (ext == ".gml" || ext == ".txt")
+                {
+                    // Schema file — redirect to import
+                    HandleImportCommand(new[] { "import", filePath });
+                    return;
+                }
+                if (ext == ".step" || ext == ".stp")
+                    LoadStepToViewport(filePath);
+                else if (ext == ".obj")
+                    LoadObjToViewport(filePath);
+                else
+                {
+                    AppendOutput($"  Unsupported file format '{ext}'. Supported: .obj, .step, .stp, .gml, .txt");
+                    return;
+                }
+                AppendOutput($"  Opened '{Path.GetFileName(filePath)}'");
+            }
+            catch (Exception ex)
+            {
+                AppendOutput($"  Error loading file: {ex.Message}");
+            }
+        }
+
+        private void HandleImportCommand(string[] parts)
+        {
+            string? filePath = null;
+            if (parts.Length >= 2)
+            {
+                filePath = string.Join(' ', parts, 1, parts.Length - 1).Trim('"');
+            }
+            else
+            {
+                var dlg = new OpenFileDialog
+                {
+                    Title = "Import Command Schema",
+                    Filter = "Command Schema (*.gml;*.txt)|*.gml;*.txt|All files (*.*)|*.*"
+                };
+                if (dlg.ShowDialog(this) == true)
+                    filePath = dlg.FileName;
+            }
+
+            if (string.IsNullOrWhiteSpace(filePath))
+            {
+                AppendOutput("  Cancelled.");
+                return;
+            }
+            if (!File.Exists(filePath))
+            {
+                AppendOutput($"  File not found: {filePath}");
+                return;
+            }
+
+            try
+            {
+                var lines = File.ReadAllLines(filePath);
+                int executed = 0, skipped = 0;
+                AppendOutput($"  Importing '{Path.GetFileName(filePath)}' ({lines.Length} lines)...");
+                foreach (var raw in lines)
+                {
+                    var line = raw.Trim();
+                    // Skip empty lines and comments (lines starting with # or //)
+                    if (string.IsNullOrWhiteSpace(line) || line.StartsWith('#') || line.StartsWith("//"))
+                    {
+                        skipped++;
+                        continue;
+                    }
+                    AppendOutput($"> {line}");
+                    ProcessCommand(line);
+                    executed++;
+                }
+                AppendOutput($"  Import complete: {executed} commands executed, {skipped} skipped.");
+            }
+            catch (Exception ex)
+            {
+                AppendOutput($"  Error importing schema: {ex.Message}");
+            }
+        }
+
         private void ShowCommandHelp()
         {
             AppendOutput("  Available commands:");
@@ -1802,6 +1924,9 @@ namespace GML_WPF
             AppendOutput("    scale <name> sx,sy,sz                       - Scale a body");
             AppendOutput("    delete <name>                               - Remove a body from scene");
             AppendOutput("    list                                        - List all created bodies");
+            AppendOutput("    open [filepath]                             - Open a 3D model file (OBJ/STEP)");
+            AppendOutput("    import [filepath]                           - Run commands from a schema file");
+            AppendOutput("    exit                                        - Close the application");
             AppendOutput("    clear                                       - Clear command output");
             AppendOutput("    help                                        - Show this help");
         }
