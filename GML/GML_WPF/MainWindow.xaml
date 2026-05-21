@@ -42,6 +42,11 @@
                 <Separator />
                 <MenuItem Header="Reset Model Transform" Click="ResetModelTransformMenuItem_Click" />
             </MenuItem>
+            <MenuItem Header="_Boolean">
+                <MenuItem Header="_Union..." Click="BooleanUnionMenuItem_Click" />
+                <MenuItem Header="_Subtract..." Click="BooleanSubtractMenuItem_Click" />
+                <MenuItem Header="_Intersect..." Click="BooleanIntersectMenuItem_Click" />
+            </MenuItem>
             <MenuItem Header="_KD-Tree">
                 <MenuItem Header="Sphere Intersection..." Click="SphereIntersectMenuItem_Click" />
                 <MenuItem Header="Cylinder Intersection..." Click="CylinderIntersectMenuItem_Click" />

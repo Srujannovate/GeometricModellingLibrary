@@ -44,10 +44,12 @@ namespace GML_WPF
             public string BodyType = "";
             public Hx.MeshGeometryModel3D Model = null!;
             public Transform3DGroup Transform = new();
+            public Occt.TopoDS_Shape? BRepShape; // OCCT solid for Boolean operations
         }
 
         private readonly Dictionary<string, CommandBody> _commandBodies = new(StringComparer.OrdinalIgnoreCase);
-        private int _cubeCount, _cylinderCount, _rectangleCount;
+        private int _cubeCount, _cylinderCount, _rectangleCount, _boolCount;
+        private bool _occtConfigured;
         private readonly List<string> _commandHistory = new();
         private int _historyIndex = -1;
 
@@ -1609,6 +1611,18 @@ namespace GML_WPF
                 case "list":
                     HandleListCommand();
                     break;
+                case "union":
+                case "fuse":
+                    HandleBooleanCommand(parts, "union");
+                    break;
+                case "subtract":
+                case "cut":
+                    HandleBooleanCommand(parts, "subtract");
+                    break;
+                case "intersect":
+                case "common":
+                    HandleBooleanCommand(parts, "intersect");
+                    break;
                 case "open":
                     HandleOpenCommand(parts);
                     break;
@@ -1639,6 +1653,7 @@ namespace GML_WPF
                 return;
             }
 
+            EnsureOcctConfigured();
             switch (parts[1].ToLowerInvariant())
             {
                 case "cube":
@@ -1646,8 +1661,10 @@ namespace GML_WPF
                     double size = 2;
                     if (parts.Length >= 3 && double.TryParse(parts[2], out var s)) size = s;
                     var name = $"Cube_{++_cubeCount}";
-                    var geom = BuildBox((float)size, (float)size, (float)size);
-                    AddCommandBody(name, "Cube", geom);
+                    var hs = size / 2;
+                    var brepShape = new Occt.BRepPrimAPI_MakeBox(
+                        new Occt.gp_Pnt(-hs, -hs, -hs), hs * 2, hs * 2, hs * 2).Shape;
+                    AddCommandBodyFromBrep(name, "Cube", brepShape);
                     AppendOutput($"  Created '{name}' (size={size:F2})");
                     break;
                 }
@@ -1657,10 +1674,11 @@ namespace GML_WPF
                     if (parts.Length >= 3 && double.TryParse(parts[2], out var r)) radius = r;
                     if (parts.Length >= 4 && double.TryParse(parts[3], out var h)) height = h;
                     var name = $"Cylinder_{++_cylinderCount}";
-                    var p0 = new Vector3(0, -(float)(height / 2), 0);
-                    var p1 = new Vector3(0, (float)(height / 2), 0);
-                    var geom = BuildCylinder(p0, p1, (float)radius, 36);
-                    AddCommandBody(name, "Cylinder", geom);
+                    // OCCT cylinder: axis along Z by default; we want axis along Y, centered at origin
+                    var ax = new Occt.gp_Ax2(new Occt.gp_Pnt(0, -height / 2, 0),
+                                              new Occt.gp_Dir(0, 1, 0));
+                    var brepShape = new Occt.BRepPrimAPI_MakeCylinder(ax, radius, height).Shape;
+                    AddCommandBodyFromBrep(name, "Cylinder", brepShape);
                     AppendOutput($"  Created '{name}' (radius={radius:F2}, height={height:F2})");
                     break;
                 }
@@ -1672,8 +1690,9 @@ namespace GML_WPF
                     if (parts.Length >= 4 && double.TryParse(parts[3], out var ph)) h = ph;
                     if (parts.Length >= 5 && double.TryParse(parts[4], out var pd)) d = pd;
                     var name = $"Rectangle_{++_rectangleCount}";
-                    var geom = BuildBox((float)w, (float)h, (float)d);
-                    AddCommandBody(name, "Rectangle", geom);
+                    var brepShape = new Occt.BRepPrimAPI_MakeBox(
+                        new Occt.gp_Pnt(-w / 2, -h / 2, -d / 2), w, h, d).Shape;
+                    AddCommandBodyFromBrep(name, "Rectangle", brepShape);
                     AppendOutput($"  Created '{name}' (width={w:F2}, height={h:F2}, depth={d:F2})");
                     break;
                 }
@@ -1683,7 +1702,7 @@ namespace GML_WPF
             }
         }
 
-        private void AddCommandBody(string name, string bodyType, HxSharpDX.MeshGeometry3D geom)
+        private void AddCommandBody(string name, string bodyType, HxSharpDX.MeshGeometry3D geom, Occt.TopoDS_Shape? brepShape = null)
         {
             var transform = new Transform3DGroup();
             var mats = new[] { Hx.PhongMaterials.Orange, Hx.PhongMaterials.Blue, Hx.PhongMaterials.Green,
@@ -1697,7 +1716,13 @@ namespace GML_WPF
                 Transform = transform
             };
             View3D.Items.Add(model);
-            _commandBodies[name] = new CommandBody { Name = name, BodyType = bodyType, Model = model, Transform = transform };
+            _commandBodies[name] = new CommandBody { Name = name, BodyType = bodyType, Model = model, Transform = transform, BRepShape = brepShape };
+        }
+
+        private void AddCommandBodyFromBrep(string name, string bodyType, Occt.TopoDS_Shape brepShape)
+        {
+            var geom = TessellateBrep(brepShape);
+            AddCommandBody(name, bodyType, geom, brepShape);
         }
 
         private void HandleTranslateCommand(string[] parts)
@@ -1922,6 +1947,9 @@ namespace GML_WPF
             AppendOutput("    translate <name> dx,dy,dz                   - Translate a body");
             AppendOutput("    rotate <name> angle,ax,ay,az                - Rotate a body (degrees)");
             AppendOutput("    scale <name> sx,sy,sz                       - Scale a body");
+            AppendOutput("    union <nameA> <nameB>                       - Boolean union (fuse)");
+            AppendOutput("    subtract <nameA> <nameB>                    - Boolean subtraction (A minus B)");
+            AppendOutput("    intersect <nameA> <nameB>                   - Boolean intersection (common)");
             AppendOutput("    delete <name>                               - Remove a body from scene");
             AppendOutput("    list                                        - List all created bodies");
             AppendOutput("    open [filepath]                             - Open a 3D model file (OBJ/STEP)");
@@ -1949,6 +1977,151 @@ namespace GML_WPF
                 4,5,1, 4,1,0
             };
             return new HxSharpDX.MeshGeometry3D { Positions = positions, Indices = indices };
+        }
+
+        // ===== BRep Boolean Operations =====
+        private void EnsureOcctConfigured()
+        {
+            if (_occtConfigured) return;
+            OcctConfiguration.Configure();
+            _occtConfigured = true;
+        }
+
+        /// <summary>Convert WPF Transform3DGroup to an OCCT gp_Trsf and apply it to the shape.</summary>
+        private static Occt.TopoDS_Shape ApplyWpfTransform(Occt.TopoDS_Shape shape, Transform3DGroup wpfTransform)
+        {
+            if (wpfTransform.Children.Count == 0) return shape;
+            var m = wpfTransform.Value;
+            var trsf = new Occt.gp_Trsf();
+            // Build a 3x4 matrix from the WPF Matrix3D (row-major) into OCCT column convention
+            trsf.SetValues(
+                m.M11, m.M21, m.M31, m.OffsetX,
+                m.M12, m.M22, m.M32, m.OffsetY,
+                m.M13, m.M23, m.M33, m.OffsetZ);
+            return new Occt.BRepBuilderAPI_Transform(shape, trsf, true).Shape;
+        }
+
+        /// <summary>Tessellate an OCCT BRep shape into a HelixToolkit mesh.</summary>
+        private static HxSharpDX.MeshGeometry3D TessellateBrep(Occt.TopoDS_Shape shape)
+        {
+            new Occt.BRepMesh_IncrementalMesh(shape, 0.1, false, 0.5, true);
+            var positions = new HT.Vector3Collection();
+            var indices = new HT.IntCollection();
+            var explorer = new Occt.TopExp_Explorer(shape, Occt.TopAbs_ShapeEnum.TopAbs_FACE);
+            while (explorer.More)
+            {
+                var face = (Occt.TopoDS_Face)explorer.Current;
+                var location = new Occt.TopLoc_Location();
+                var poly = Occt.BRep_Tool.Triangulation(face, out location);
+                if (poly != null)
+                {
+                    int offset = positions.Count;
+                    var trsf = location.IsIdentity ? null : location.Transformation;
+                    for (int i = 1; i <= poly.NbNodes; i++)
+                    {
+                        var pt = poly.Node(i);
+                        if (trsf != null) pt.Transform(trsf);
+                        positions.Add(new Vector3((float)pt.X, (float)pt.Y, (float)pt.Z));
+                    }
+                    bool reversed = face.Orientation == Occt.TopAbs_Orientation.TopAbs_REVERSED;
+                    for (int i = 1; i <= poly.NbTriangles; i++)
+                    {
+                        var tri = poly.Triangle(i);
+                        tri.Get(out int n1, out int n2, out int n3);
+                        if (reversed) { indices.Add(offset + n1 - 1); indices.Add(offset + n3 - 1); indices.Add(offset + n2 - 1); }
+                        else           { indices.Add(offset + n1 - 1); indices.Add(offset + n2 - 1); indices.Add(offset + n3 - 1); }
+                    }
+                }
+                explorer.Next();
+            }
+            return new HxSharpDX.MeshGeometry3D { Positions = positions, Indices = indices };
+        }
+
+        private void HandleBooleanCommand(string[] parts, string op)
+        {
+            if (parts.Length < 3)
+            {
+                AppendOutput($"  Usage: {op} <nameA> <nameB>");
+                return;
+            }
+            if (!_commandBodies.TryGetValue(parts[1], out var bodyA))
+            {
+                AppendOutput($"  Body '{parts[1]}' not found.");
+                return;
+            }
+            if (!_commandBodies.TryGetValue(parts[2], out var bodyB))
+            {
+                AppendOutput($"  Body '{parts[2]}' not found.");
+                return;
+            }
+            if (bodyA.BRepShape == null || bodyB.BRepShape == null)
+            {
+                AppendOutput($"  Boolean operations require BRep bodies (created via 'create' commands).");
+                return;
+            }
+
+            try
+            {
+                EnsureOcctConfigured();
+                // Apply pending WPF transforms into the BRep shapes
+                var shapeA = ApplyWpfTransform(bodyA.BRepShape, bodyA.Transform);
+                var shapeB = ApplyWpfTransform(bodyB.BRepShape, bodyB.Transform);
+
+                Occt.TopoDS_Shape result;
+                switch (op)
+                {
+                    case "union":     result = new Occt.BRepAlgoAPI_Fuse(shapeA, shapeB).Shape; break;
+                    case "subtract":  result = new Occt.BRepAlgoAPI_Cut(shapeA, shapeB).Shape; break;
+                    case "intersect": result = new Occt.BRepAlgoAPI_Common(shapeA, shapeB).Shape; break;
+                    default: return;
+                }
+
+                if (result == null || result.IsNull)
+                {
+                    AppendOutput($"  Boolean {op} produced an empty result.");
+                    return;
+                }
+
+                // Remove the two operand bodies from the scene
+                View3D.Items.Remove(bodyA.Model);
+                View3D.Items.Remove(bodyB.Model);
+                _commandBodies.Remove(bodyA.Name);
+                _commandBodies.Remove(bodyB.Name);
+
+                // Create new body from result
+                var name = $"Bool_{++_boolCount}";
+                AddCommandBodyFromBrep(name, $"{op}({bodyA.Name},{bodyB.Name})", result);
+                AppendOutput($"  {op}('{bodyA.Name}', '{bodyB.Name}') → '{name}'");
+            }
+            catch (Exception ex)
+            {
+                AppendOutput($"  Boolean {op} failed: {ex.Message}");
+            }
+        }
+
+        private void BooleanUnionMenuItem_Click(object sender, RoutedEventArgs e)
+            => PromptBooleanFromMenu("union");
+        private void BooleanSubtractMenuItem_Click(object sender, RoutedEventArgs e)
+            => PromptBooleanFromMenu("subtract");
+        private void BooleanIntersectMenuItem_Click(object sender, RoutedEventArgs e)
+            => PromptBooleanFromMenu("intersect");
+
+        private void PromptBooleanFromMenu(string op)
+        {
+            var names = _commandBodies.Keys.Where(k => _commandBodies[k].BRepShape != null).ToList();
+            if (names.Count < 2)
+            {
+                MessageBox.Show(this, "At least two BRep bodies are required for Boolean operations.\nCreate bodies using the command window first.",
+                    "Boolean Operation", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+            var nameList = string.Join(", ", names);
+            var textA = VB.Interaction.InputBox($"First body (A):\n\nAvailable: {nameList}", $"Boolean {op} — Body A", names[0], -1, -1);
+            if (string.IsNullOrWhiteSpace(textA)) return;
+            var textB = VB.Interaction.InputBox($"Second body (B):\n\nAvailable: {nameList}", $"Boolean {op} — Body B", names.Count > 1 ? names[1] : names[0], -1, -1);
+            if (string.IsNullOrWhiteSpace(textB)) return;
+            AppendOutput($"> {op} {textA.Trim()} {textB.Trim()}");
+            HandleBooleanCommand(new[] { op, textA.Trim(), textB.Trim() }, op);
         }
     }
 }

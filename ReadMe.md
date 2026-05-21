@@ -26,6 +26,20 @@ All transform commands reference a body by name. Names are case-insensitive.
 | `rotate <name> angle,ax,ay,az` | Rotate a body by `angle` degrees around the axis `(ax, ay, az)`. The axis is automatically normalized. Example: `rotate Cube_1 45,0,1,0` |
 | `scale <name> sx,sy,sz` | Scale a body by the given factors along each axis. Example: `scale Cube_1 2,2,2` |
 
+### Boolean Operations
+
+BRep Boolean operations use the OpenCascade (OCCT) kernel. They work on bodies created with `create` commands. Pending transforms are baked into the BRep shapes before the operation. Both operand bodies are removed and replaced by a new result body.
+
+Available via the **Boolean** menu or as commands:
+
+| Command | Description |
+|---|---|
+| `union <nameA> <nameB>` | Fuse two bodies into one. `fuse` also works. |
+| `subtract <nameA> <nameB>` | Subtract body B from body A. `cut` also works. |
+| `intersect <nameA> <nameB>` | Keep only the overlapping volume. `common` also works. |
+
+The result body is named `Bool_1`, `Bool_2`, etc. and can be used in further Boolean operations or transforms.
+
 ### Management Commands
 
 | Command | Description |
@@ -103,4 +117,11 @@ Load it with:
 
 > delete Cube_1
   Deleted 'Cube_1'
+
+> create cube 3
+  Created 'Cube_1' (size=3.00)
+> create cylinder 1 4
+  Created 'Cylinder_1' (radius=1.00, height=4.00)
+> subtract Cube_1 Cylinder_1
+  subtract('Cube_1', 'Cylinder_1') → 'Bool_1'
 ```
