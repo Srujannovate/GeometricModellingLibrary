@@ -1662,9 +1662,11 @@ namespace GML_WPF
                     if (parts.Length >= 3 && double.TryParse(parts[2], out var s)) size = s;
                     var name = $"Cube_{++_cubeCount}";
                     var hs = size / 2;
+                    // Hand-built mesh for display (fast); BRep shape stored for Boolean ops only
+                    var geom = BuildBox((float)size, (float)size, (float)size);
                     var brepShape = new Occt.BRepPrimAPI_MakeBox(
                         new Occt.gp_Pnt(-hs, -hs, -hs), hs * 2, hs * 2, hs * 2).Shape;
-                    AddCommandBodyFromBrep(name, "Cube", brepShape);
+                    AddCommandBody(name, "Cube", geom, brepShape);
                     AppendOutput($"  Created '{name}' (size={size:F2})");
                     break;
                 }
@@ -1674,11 +1676,14 @@ namespace GML_WPF
                     if (parts.Length >= 3 && double.TryParse(parts[2], out var r)) radius = r;
                     if (parts.Length >= 4 && double.TryParse(parts[3], out var h)) height = h;
                     var name = $"Cylinder_{++_cylinderCount}";
-                    // OCCT cylinder: axis along Z by default; we want axis along Y, centered at origin
+                    var geom = BuildCylinder(
+                        new Vector3(0, -(float)(height / 2), 0),
+                        new Vector3(0, (float)(height / 2), 0),
+                        (float)radius, 36);
                     var ax = new Occt.gp_Ax2(new Occt.gp_Pnt(0, -height / 2, 0),
                                               new Occt.gp_Dir(0, 1, 0));
                     var brepShape = new Occt.BRepPrimAPI_MakeCylinder(ax, radius, height).Shape;
-                    AddCommandBodyFromBrep(name, "Cylinder", brepShape);
+                    AddCommandBody(name, "Cylinder", geom, brepShape);
                     AppendOutput($"  Created '{name}' (radius={radius:F2}, height={height:F2})");
                     break;
                 }
@@ -1690,9 +1695,10 @@ namespace GML_WPF
                     if (parts.Length >= 4 && double.TryParse(parts[3], out var ph)) h = ph;
                     if (parts.Length >= 5 && double.TryParse(parts[4], out var pd)) d = pd;
                     var name = $"Rectangle_{++_rectangleCount}";
+                    var geom = BuildBox((float)w, (float)h, (float)d);
                     var brepShape = new Occt.BRepPrimAPI_MakeBox(
                         new Occt.gp_Pnt(-w / 2, -h / 2, -d / 2), w, h, d).Shape;
-                    AddCommandBodyFromBrep(name, "Rectangle", brepShape);
+                    AddCommandBody(name, "Rectangle", geom, brepShape);
                     AppendOutput($"  Created '{name}' (width={w:F2}, height={h:F2}, depth={d:F2})");
                     break;
                 }
@@ -1721,7 +1727,8 @@ namespace GML_WPF
 
         private void AddCommandBodyFromBrep(string name, string bodyType, Occt.TopoDS_Shape brepShape)
         {
-            var geom = TessellateBrep(brepShape);
+            // Run OCCT tessellation on a ThreadPool thread to avoid STA deadlock
+            var geom = System.Threading.Tasks.Task.Run(() => TessellateBrep(brepShape)).Result;
             AddCommandBody(name, bodyType, geom, brepShape);
         }
 
@@ -2004,7 +2011,8 @@ namespace GML_WPF
         /// <summary>Tessellate an OCCT BRep shape into a HelixToolkit mesh.</summary>
         private static HxSharpDX.MeshGeometry3D TessellateBrep(Occt.TopoDS_Shape shape)
         {
-            new Occt.BRepMesh_IncrementalMesh(shape, 0.1, false, 0.5, true);
+            // inParallel must be false — parallel meshing deadlocks on the WPF STA UI thread
+            new Occt.BRepMesh_IncrementalMesh(shape, 0.1, false, 0.5, false);
             var positions = new HT.Vector3Collection();
             var indices = new HT.IntCollection();
             var explorer = new Occt.TopExp_Explorer(shape, Occt.TopAbs_ShapeEnum.TopAbs_FACE);
@@ -2063,18 +2071,31 @@ namespace GML_WPF
             try
             {
                 EnsureOcctConfigured();
-                // Apply pending WPF transforms into the BRep shapes
-                var shapeA = ApplyWpfTransform(bodyA.BRepShape, bodyA.Transform);
-                var shapeB = ApplyWpfTransform(bodyB.BRepShape, bodyB.Transform);
 
-                Occt.TopoDS_Shape result;
-                switch (op)
+                // Capture shapes and transforms before going off-thread
+                var brepA = bodyA.BRepShape;
+                var brepB = bodyB.BRepShape;
+                var tformA = bodyA.Transform;
+                var tformB = bodyB.Transform;
+
+                // Run all OCCT work (transform + Boolean + tessellate) on a ThreadPool
+                // thread to avoid STA deadlock from BRepMesh_IncrementalMesh
+                var (result, geom) = System.Threading.Tasks.Task.Run(() =>
                 {
-                    case "union":     result = new Occt.BRepAlgoAPI_Fuse(shapeA, shapeB).Shape; break;
-                    case "subtract":  result = new Occt.BRepAlgoAPI_Cut(shapeA, shapeB).Shape; break;
-                    case "intersect": result = new Occt.BRepAlgoAPI_Common(shapeA, shapeB).Shape; break;
-                    default: return;
-                }
+                    var sA = ApplyWpfTransform(brepA, tformA);
+                    var sB = ApplyWpfTransform(brepB, tformB);
+
+                    Occt.TopoDS_Shape res = op switch
+                    {
+                        "union"     => new Occt.BRepAlgoAPI_Fuse(sA, sB).Shape,
+                        "subtract"  => new Occt.BRepAlgoAPI_Cut(sA, sB).Shape,
+                        "intersect" => new Occt.BRepAlgoAPI_Common(sA, sB).Shape,
+                        _ => throw new InvalidOperationException()
+                    };
+
+                    var mesh = TessellateBrep(res);
+                    return (res, mesh);
+                }).Result;
 
                 if (result == null || result.IsNull)
                 {
@@ -2090,7 +2111,7 @@ namespace GML_WPF
 
                 // Create new body from result
                 var name = $"Bool_{++_boolCount}";
-                AddCommandBodyFromBrep(name, $"{op}({bodyA.Name},{bodyB.Name})", result);
+                AddCommandBody(name, $"{op}({bodyA.Name},{bodyB.Name})", geom, result);
                 AppendOutput($"  {op}('{bodyA.Name}', '{bodyB.Name}') → '{name}'");
             }
             catch (Exception ex)
