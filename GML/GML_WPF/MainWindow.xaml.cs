@@ -38,6 +38,19 @@ namespace GML_WPF
             public Dictionary<(int x,int y,int z), List<int>> Grid = new(); // maps cell -> list of triangle base indices (i of Indices[i..i+2])
         }
 
+        private sealed class CommandBody
+        {
+            public string Name = "";
+            public string BodyType = "";
+            public Hx.MeshGeometryModel3D Model = null!;
+            public Transform3DGroup Transform = new();
+        }
+
+        private readonly Dictionary<string, CommandBody> _commandBodies = new(StringComparer.OrdinalIgnoreCase);
+        private int _cubeCount, _cylinderCount, _rectangleCount;
+        private readonly List<string> _commandHistory = new();
+        private int _historyIndex = -1;
+
         private readonly Hx.PerspectiveCamera _camera = new Hx.PerspectiveCamera
         {
             Position = new Point3D(0, 0, 8),
@@ -134,6 +147,13 @@ namespace GML_WPF
                 _camera.Position = new Point3D(0, 0, 8);
                 _camera.LookDirection = new System.Windows.Media.Media3D.Vector3D(0, 0, -8);
                 _camera.UpDirection = new System.Windows.Media.Media3D.Vector3D(0, 1, 0);
+            };
+
+            // Initialize command window
+            Loaded += (_, __) =>
+            {
+                AppendOutput("GML Command Window — Type 'help' for available commands.");
+                CommandInput.Focus();
             };
         }
 
@@ -1511,5 +1531,299 @@ namespace GML_WPF
         private static Vector3 Add(Vector3 a, Vector3 b) => new Vector3(a.X + b.X, a.Y + b.Y, a.Z + b.Z);
         private static Vector3 Mul(Vector3 a, float s) => new Vector3(a.X * s, a.Y * s, a.Z * s);
         private static Vector3 Cross(Vector3 a, Vector3 b) => new Vector3(a.Y * b.Z - a.Z * b.Y, a.Z * b.X - a.X * b.Z, a.X * b.Y - a.Y * b.X);
+
+        // ===== Command Window =====
+        private void CommandInput_KeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.Key == Key.Enter)
+            {
+                var cmd = CommandInput.Text.Trim();
+                if (!string.IsNullOrEmpty(cmd))
+                {
+                    _commandHistory.Add(cmd);
+                    _historyIndex = _commandHistory.Count;
+                    AppendOutput($"> {cmd}");
+                    ProcessCommand(cmd);
+                    CommandInput.Clear();
+                }
+                e.Handled = true;
+            }
+            else if (e.Key == Key.Up)
+            {
+                if (_commandHistory.Count > 0 && _historyIndex > 0)
+                {
+                    _historyIndex--;
+                    CommandInput.Text = _commandHistory[_historyIndex];
+                    CommandInput.CaretIndex = CommandInput.Text.Length;
+                }
+                e.Handled = true;
+            }
+            else if (e.Key == Key.Down)
+            {
+                if (_historyIndex < _commandHistory.Count - 1)
+                {
+                    _historyIndex++;
+                    CommandInput.Text = _commandHistory[_historyIndex];
+                    CommandInput.CaretIndex = CommandInput.Text.Length;
+                }
+                else
+                {
+                    _historyIndex = _commandHistory.Count;
+                    CommandInput.Clear();
+                }
+                e.Handled = true;
+            }
+        }
+
+        private void AppendOutput(string text)
+        {
+            if (CommandOutput.Text.Length > 0)
+                CommandOutput.Text += "\n";
+            CommandOutput.Text += text;
+            CommandOutputScroll.ScrollToEnd();
+        }
+
+        private void ProcessCommand(string cmd)
+        {
+            var parts = cmd.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length == 0) return;
+
+            switch (parts[0].ToLowerInvariant())
+            {
+                case "create":
+                    HandleCreateCommand(parts);
+                    break;
+                case "translate":
+                    HandleTranslateCommand(parts);
+                    break;
+                case "rotate":
+                    HandleRotateCommand(parts);
+                    break;
+                case "scale":
+                    HandleScaleCommand(parts);
+                    break;
+                case "delete":
+                case "remove":
+                    HandleDeleteCommand(parts);
+                    break;
+                case "list":
+                    HandleListCommand();
+                    break;
+                case "clear":
+                    CommandOutput.Text = "";
+                    break;
+                case "help":
+                    ShowCommandHelp();
+                    break;
+                default:
+                    AppendOutput($"  Unknown command '{parts[0]}'. Type 'help' for available commands.");
+                    break;
+            }
+        }
+
+        private void HandleCreateCommand(string[] parts)
+        {
+            if (parts.Length < 2)
+            {
+                AppendOutput("  Usage: create <cube|cylinder|rectangle> [params...]");
+                return;
+            }
+
+            switch (parts[1].ToLowerInvariant())
+            {
+                case "cube":
+                {
+                    double size = 2;
+                    if (parts.Length >= 3 && double.TryParse(parts[2], out var s)) size = s;
+                    var name = $"Cube_{++_cubeCount}";
+                    var geom = BuildBox((float)size, (float)size, (float)size);
+                    AddCommandBody(name, "Cube", geom);
+                    AppendOutput($"  Created '{name}' (size={size:F2})");
+                    break;
+                }
+                case "cylinder":
+                {
+                    double radius = 1, height = 3;
+                    if (parts.Length >= 3 && double.TryParse(parts[2], out var r)) radius = r;
+                    if (parts.Length >= 4 && double.TryParse(parts[3], out var h)) height = h;
+                    var name = $"Cylinder_{++_cylinderCount}";
+                    var p0 = new Vector3(0, -(float)(height / 2), 0);
+                    var p1 = new Vector3(0, (float)(height / 2), 0);
+                    var geom = BuildCylinder(p0, p1, (float)radius, 36);
+                    AddCommandBody(name, "Cylinder", geom);
+                    AppendOutput($"  Created '{name}' (radius={radius:F2}, height={height:F2})");
+                    break;
+                }
+                case "rectangle":
+                case "box":
+                {
+                    double w = 3, h = 2, d = 1;
+                    if (parts.Length >= 3 && double.TryParse(parts[2], out var pw)) w = pw;
+                    if (parts.Length >= 4 && double.TryParse(parts[3], out var ph)) h = ph;
+                    if (parts.Length >= 5 && double.TryParse(parts[4], out var pd)) d = pd;
+                    var name = $"Rectangle_{++_rectangleCount}";
+                    var geom = BuildBox((float)w, (float)h, (float)d);
+                    AddCommandBody(name, "Rectangle", geom);
+                    AppendOutput($"  Created '{name}' (width={w:F2}, height={h:F2}, depth={d:F2})");
+                    break;
+                }
+                default:
+                    AppendOutput($"  Unknown shape '{parts[1]}'. Available: cube, cylinder, rectangle");
+                    break;
+            }
+        }
+
+        private void AddCommandBody(string name, string bodyType, HxSharpDX.MeshGeometry3D geom)
+        {
+            var transform = new Transform3DGroup();
+            var mats = new[] { Hx.PhongMaterials.Orange, Hx.PhongMaterials.Blue, Hx.PhongMaterials.Green,
+                               Hx.PhongMaterials.Red, Hx.PhongMaterials.Yellow, Hx.PhongMaterials.Silver };
+            var model = new Hx.MeshGeometryModel3D
+            {
+                Geometry = geom,
+                Material = mats[_commandBodies.Count % mats.Length],
+                RenderWireframe = true,
+                WireframeColor = Colors.White,
+                Transform = transform
+            };
+            View3D.Items.Add(model);
+            _commandBodies[name] = new CommandBody { Name = name, BodyType = bodyType, Model = model, Transform = transform };
+        }
+
+        private void HandleTranslateCommand(string[] parts)
+        {
+            if (parts.Length < 3)
+            {
+                AppendOutput("  Usage: translate <name> dx,dy,dz");
+                return;
+            }
+            if (!_commandBodies.TryGetValue(parts[1], out var body))
+            {
+                AppendOutput($"  Body '{parts[1]}' not found. Use 'list' to see available bodies.");
+                return;
+            }
+            if (!TryParse3(parts[2], out var dx, out var dy, out var dz))
+            {
+                AppendOutput("  Invalid values. Use format: dx,dy,dz (e.g. 1,0,-2)");
+                return;
+            }
+            body.Transform.Children.Add(new TranslateTransform3D(dx, dy, dz));
+            AppendOutput($"  Translated '{body.Name}' by ({dx:F2}, {dy:F2}, {dz:F2})");
+        }
+
+        private void HandleRotateCommand(string[] parts)
+        {
+            if (parts.Length < 3)
+            {
+                AppendOutput("  Usage: rotate <name> angle,axisX,axisY,axisZ");
+                return;
+            }
+            if (!_commandBodies.TryGetValue(parts[1], out var body))
+            {
+                AppendOutput($"  Body '{parts[1]}' not found. Use 'list' to see available bodies.");
+                return;
+            }
+            var vals = parts[2].Split(',');
+            if (vals.Length != 4 || !double.TryParse(vals[0], out var ang) ||
+                !double.TryParse(vals[1], out var ax) || !double.TryParse(vals[2], out var ay) || !double.TryParse(vals[3], out var az))
+            {
+                AppendOutput("  Invalid values. Use format: angle,axisX,axisY,axisZ (e.g. 45,0,1,0)");
+                return;
+            }
+            var len = Math.Sqrt(ax * ax + ay * ay + az * az);
+            if (len < 1e-9) { AppendOutput("  Axis must be non-zero."); return; }
+            ax /= len; ay /= len; az /= len;
+            var rot = new AxisAngleRotation3D(new System.Windows.Media.Media3D.Vector3D(ax, ay, az), ang);
+            body.Transform.Children.Add(new RotateTransform3D(rot));
+            AppendOutput($"  Rotated '{body.Name}' by {ang:F1}° around ({ax:F2},{ay:F2},{az:F2})");
+        }
+
+        private void HandleScaleCommand(string[] parts)
+        {
+            if (parts.Length < 3)
+            {
+                AppendOutput("  Usage: scale <name> sx,sy,sz");
+                return;
+            }
+            if (!_commandBodies.TryGetValue(parts[1], out var body))
+            {
+                AppendOutput($"  Body '{parts[1]}' not found. Use 'list' to see available bodies.");
+                return;
+            }
+            if (!TryParse3(parts[2], out var sx, out var sy, out var sz))
+            {
+                AppendOutput("  Invalid values. Use format: sx,sy,sz (e.g. 2,2,2)");
+                return;
+            }
+            body.Transform.Children.Add(new ScaleTransform3D(sx, sy, sz));
+            AppendOutput($"  Scaled '{body.Name}' by ({sx:F2}, {sy:F2}, {sz:F2})");
+        }
+
+        private void HandleDeleteCommand(string[] parts)
+        {
+            if (parts.Length < 2)
+            {
+                AppendOutput("  Usage: delete <name>");
+                return;
+            }
+            if (!_commandBodies.TryGetValue(parts[1], out var body))
+            {
+                AppendOutput($"  Body '{parts[1]}' not found.");
+                return;
+            }
+            View3D.Items.Remove(body.Model);
+            _commandBodies.Remove(parts[1]);
+            AppendOutput($"  Deleted '{body.Name}'");
+        }
+
+        private void HandleListCommand()
+        {
+            if (_commandBodies.Count == 0)
+            {
+                AppendOutput("  No bodies created. Use 'create <shape>' to add one.");
+                return;
+            }
+            AppendOutput($"  Bodies ({_commandBodies.Count}):");
+            foreach (var kv in _commandBodies)
+            {
+                var b = kv.Value;
+                AppendOutput($"    {b.Name} [{b.BodyType}] transforms={b.Transform.Children.Count}");
+            }
+        }
+
+        private void ShowCommandHelp()
+        {
+            AppendOutput("  Available commands:");
+            AppendOutput("    create cube [size]                          - Create a cube (default size=2)");
+            AppendOutput("    create cylinder [radius] [height]           - Create a cylinder (default r=1, h=3)");
+            AppendOutput("    create rectangle [width] [height] [depth]   - Create a box (default 3x2x1)");
+            AppendOutput("    translate <name> dx,dy,dz                   - Translate a body");
+            AppendOutput("    rotate <name> angle,ax,ay,az                - Rotate a body (degrees)");
+            AppendOutput("    scale <name> sx,sy,sz                       - Scale a body");
+            AppendOutput("    delete <name>                               - Remove a body from scene");
+            AppendOutput("    list                                        - List all created bodies");
+            AppendOutput("    clear                                       - Clear command output");
+            AppendOutput("    help                                        - Show this help");
+        }
+
+        private static HxSharpDX.MeshGeometry3D BuildBox(float sx, float sy, float sz)
+        {
+            float hx = sx / 2, hy = sy / 2, hz = sz / 2;
+            var positions = new HT.Vector3Collection
+            {
+                new Vector3(-hx,-hy,-hz), new Vector3(hx,-hy,-hz), new Vector3(hx,hy,-hz), new Vector3(-hx,hy,-hz),
+                new Vector3(-hx,-hy, hz), new Vector3(hx,-hy, hz), new Vector3(hx,hy, hz), new Vector3(-hx,hy, hz)
+            };
+            var indices = new HT.IntCollection
+            {
+                0,1,2, 0,2,3,
+                1,5,6, 1,6,2,
+                5,4,7, 5,7,6,
+                4,0,3, 4,3,7,
+                3,2,6, 3,6,7,
+                4,5,1, 4,1,0
+            };
+            return new HxSharpDX.MeshGeometry3D { Positions = positions, Indices = indices };
+        }
     }
 }

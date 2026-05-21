@@ -10,7 +10,9 @@
     <Grid>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
-            <RowDefinition Height="*" />
+            <RowDefinition Height="3*" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="150" MinHeight="80" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
@@ -89,8 +91,34 @@
             </Border>
         </Grid>
 
+        <!-- Command Window Splitter -->
+        <GridSplitter Grid.Row="2" Height="4" HorizontalAlignment="Stretch"
+                      Background="#444444" ResizeBehavior="PreviousAndNext" />
+
+        <!-- Command Window -->
+        <Border Grid.Row="3" Background="#1E1E1E" BorderBrush="#333333" BorderThickness="0,1,0,0">
+            <DockPanel>
+                <Grid DockPanel.Dock="Bottom" Margin="2">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text=">" VerticalAlignment="Center" Foreground="Lime"
+                               FontFamily="Consolas" FontSize="13" Margin="4,0" />
+                    <TextBox Grid.Column="1" x:Name="CommandInput" FontFamily="Consolas" FontSize="13"
+                             Background="#1E1E1E" Foreground="White" CaretBrush="White"
+                             BorderThickness="0" Padding="2"
+                             KeyDown="CommandInput_KeyDown" />
+                </Grid>
+                <ScrollViewer x:Name="CommandOutputScroll" VerticalScrollBarVisibility="Auto">
+                    <TextBlock x:Name="CommandOutput" FontFamily="Consolas" FontSize="12"
+                               Foreground="LightGray" TextWrapping="Wrap" Padding="4" />
+                </ScrollViewer>
+            </DockPanel>
+        </Border>
+
         <!-- Bottom Status Bar -->
-        <StatusBar Grid.Row="2">
+        <StatusBar Grid.Row="4">
             <StatusBarItem>
                 <TextBlock Text="Ready" />
             </StatusBarItem>
