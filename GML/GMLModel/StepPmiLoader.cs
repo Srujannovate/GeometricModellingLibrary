@@ -53,6 +53,23 @@ namespace GMLModel
             return pmi;
         }
 
+        public void GenerateTessellations(Occt.TopoDS_Shape shape, out List<int> allIndices, out List<Vector3> allPositions)
+        {
+            try
+            {
+                _ = new Occt.BRepMesh_IncrementalMesh(shape, 0.1, false, 0.5, true);
+            }
+            catch (Exception ex)
+            {
+
+                throw ex;
+            }
+            
+            allPositions = new List<Vector3>();
+            allIndices = new List<int>();
+            ExtractTriangles(shape, allPositions, allIndices);
+        }
+
         // =========================================================================
         // Tessellation (copied verbatim from STEPModelLoader)
         // =========================================================================

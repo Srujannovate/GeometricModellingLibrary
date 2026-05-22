@@ -1,11 +1,18 @@
 using System.Numerics;
 using GMLModel.Pmi;
+using Occt;
 using HT = HelixToolkit;
 
 namespace GMLModel
 {
     public class STEPModelLoader
     {
+        public void GenerateTessellations(TopoDS_Shape shape, out List<int> allIndices, out List<Vector3> allPositions)
+        {
+            StepPmiLoader loader = new StepPmiLoader();
+            loader.GenerateTessellations(shape, out allIndices, out allPositions);
+        }
+
         /// <summary>
         /// Loads geometry plus PMI (dimensions/tolerances/notes/views) using the
         /// OCCT XDE/CAF pipeline.

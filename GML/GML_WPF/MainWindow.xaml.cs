@@ -1,8 +1,9 @@
 using Assimp;
+using GML_WPF.Pmi;
 using GMLModel;
 using GMLModel.Pmi;
-using GML_WPF.Pmi;
 using Microsoft.Win32;
+using Occt;
 using System.IO;
 using System.Numerics;
 using System.Windows;
@@ -2011,37 +2012,19 @@ namespace GML_WPF
         /// <summary>Tessellate an OCCT BRep shape into a HelixToolkit mesh.</summary>
         private static HxSharpDX.MeshGeometry3D TessellateBrep(Occt.TopoDS_Shape shape)
         {
-            // inParallel must be false — parallel meshing deadlocks on the WPF STA UI thread
-            new Occt.BRepMesh_IncrementalMesh(shape, 0.1, false, 0.5, false);
-            var positions = new HT.Vector3Collection();
-            var indices = new HT.IntCollection();
-            var explorer = new Occt.TopExp_Explorer(shape, Occt.TopAbs_ShapeEnum.TopAbs_FACE);
-            while (explorer.More)
+            BRepCheck_Analyzer analyzer = new BRepCheck_Analyzer(shape);
+            if (!analyzer.IsValid())
             {
-                var face = (Occt.TopoDS_Face)explorer.Current;
-                var location = new Occt.TopLoc_Location();
-                var poly = Occt.BRep_Tool.Triangulation(face, out location);
-                if (poly != null)
-                {
-                    int offset = positions.Count;
-                    var trsf = location.IsIdentity ? null : location.Transformation;
-                    for (int i = 1; i <= poly.NbNodes; i++)
-                    {
-                        var pt = poly.Node(i);
-                        if (trsf != null) pt.Transform(trsf);
-                        positions.Add(new Vector3((float)pt.X, (float)pt.Y, (float)pt.Z));
-                    }
-                    bool reversed = face.Orientation == Occt.TopAbs_Orientation.TopAbs_REVERSED;
-                    for (int i = 1; i <= poly.NbTriangles; i++)
-                    {
-                        var tri = poly.Triangle(i);
-                        tri.Get(out int n1, out int n2, out int n3);
-                        if (reversed) { indices.Add(offset + n1 - 1); indices.Add(offset + n3 - 1); indices.Add(offset + n2 - 1); }
-                        else           { indices.Add(offset + n1 - 1); indices.Add(offset + n2 - 1); indices.Add(offset + n3 - 1); }
-                    }
-                }
-                explorer.Next();
+                // The shape has structural defects that must be resolved
+                throw new Exception("Invalid BRep shape");
             }
+
+            STEPModelLoader loader = new STEPModelLoader();
+            loader.GenerateTessellations(shape, out var allIndices, out var allPositions);
+            
+            var positions = new HT.Vector3Collection(allPositions);
+            var indices = new HT.IntCollection(allIndices);
+
             return new HxSharpDX.MeshGeometry3D { Positions = positions, Indices = indices };
         }
 
@@ -2080,8 +2063,8 @@ namespace GML_WPF
 
                 // Run all OCCT work (transform + Boolean + tessellate) on a ThreadPool
                 // thread to avoid STA deadlock from BRepMesh_IncrementalMesh
-                var (result, geom) = System.Threading.Tasks.Task.Run(() =>
-                {
+                //var (result, geom) = System.Threading.Tasks.Task.Run(() =>
+                //{
                     var sA = ApplyWpfTransform(brepA, tformA);
                     var sB = ApplyWpfTransform(brepB, tformB);
 
@@ -2093,10 +2076,11 @@ namespace GML_WPF
                         _ => throw new InvalidOperationException()
                     };
 
-                    var mesh = TessellateBrep(res);
-                    return (res, mesh);
-                }).Result;
-
+                 var mesh = TessellateBrep(res);
+                //return (res, mesh);
+                //}).Result;
+                var result = res;
+                var geom = mesh;
                 if (result == null || result.IsNull)
                 {
                     AppendOutput($"  Boolean {op} produced an empty result.");
