@@ -21,15 +21,18 @@
             <MenuItem Header="_File">
                 <MenuItem Header="_Open..." x:Name="OpenMenuItem" Click="OpenMenuItem_Click" />
                 <MenuItem Header="_Import..." x:Name="ImportMenuItem" Click="ImportMenuItem_Click" />
+                <MenuItem Header="_Export STEP..." x:Name="ExportStepMenuItem" Click="ExportStepMenuItem_Click" />
                 <MenuItem Header="_Export Transformed Points..." x:Name="ExportMenuItem" Click="ExportMenuItem_Click" />
                 <Separator />
                 <MenuItem Header="E_xit" Click="ExitMenuItem_Click" />
             </MenuItem>
+
             <MenuItem Header="_View">
                 <MenuItem Header="Reset Camera" Name="ResetCameraMenuItem" />
                 <Separator />
                 <MenuItem Header="Show _Triangulation" Name="ShowTriangulationMenuItem" IsCheckable="True" IsChecked="False" Click="ShowTriangulationMenuItem_Click" />
             </MenuItem>
+
             <MenuItem Header="_PMI">
                 <MenuItem Header="Show _PMI" x:Name="ShowPmiMenuItem" IsCheckable="True" IsChecked="True" Click="ShowPmiMenuItem_Click" />
                 <MenuItem Header="_Saved Views" x:Name="SavedViewsMenu" />

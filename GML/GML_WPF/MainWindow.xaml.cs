@@ -6,6 +6,7 @@ using Microsoft.Win32;
 using Occt;
 using System.IO;
 using System.Numerics;
+using System.Reflection;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -1015,6 +1016,112 @@ namespace GML_WPF
             }
             MessageBox.Show(this, "Export complete.", "OBJ Export", MessageBoxButton.OK, MessageBoxImage.Information);
         }
+
+        private void ExportStepMenuItem_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                var dlg = new SaveFileDialog
+                {
+                    Title = "Export STEP",
+                    Filter = "STEP Files (*.step;*.stp)|*.step;*.stp|All files (*.*)|*.*"
+                };
+                if (dlg.ShowDialog(this) != true) return;
+
+                var shapes = _commandBodies.Values
+                    .Where(b => b.BRepShape != null)
+                    .Select(b => ApplyWpfTransform(b.BRepShape!, b.Transform))
+                    .ToList();
+
+                if (shapes.Count == 0)
+                {
+                    MessageBox.Show(this, "No command geometry is available to export as STEP.", "Export STEP", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+
+                ExportShapesToStep(dlg.FileName, shapes);
+                MessageBox.Show(this, $"STEP export complete: {dlg.FileName}", "STEP Export", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, ex.Message, "STEP Export Failed", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        private static void ExportShapesToStep(string path, IEnumerable<Occt.TopoDS_Shape> shapes)
+        {
+            var writerType = typeof(Occt.STEPControl_Writer);
+            var writer = Activator.CreateInstance(writerType);
+            if (writer == null)
+                throw new InvalidOperationException("STEP writer could not be created.");
+
+            foreach (var shape in shapes)
+            {
+                var transferMethods = writerType.GetMethods(BindingFlags.Instance | BindingFlags.Public)
+                    .Where(m => m.Name == "Transfer")
+                    .OrderBy(m => m.GetParameters().Length)
+                    .ToList();
+
+                bool transferred = false;
+                foreach (var method in transferMethods)
+                {
+                    var p = method.GetParameters();
+                    try
+                    {
+                        if (p.Length == 1)
+                        {
+                            method.Invoke(writer, new object[] { shape });
+                            transferred = true;
+                            break;
+                        }
+                        if (p.Length == 2 && p[0].ParameterType == typeof(Occt.TopoDS_Shape))
+                        {
+                            method.Invoke(writer, new object[] { shape, 0 });
+                            transferred = true;
+                            break;
+                        }
+                    }
+                    catch { }
+                }
+
+                if (!transferred)
+                    throw new InvalidOperationException("STEP writer does not support the expected Transfer overload.");
+            }
+
+            var writeMethods = writerType.GetMethods(BindingFlags.Instance | BindingFlags.Public)
+                .Where(m => m.Name == "Write")
+                .OrderBy(m => m.GetParameters().Length)
+                .ToList();
+
+            foreach (var method in writeMethods)
+            {
+                var p = method.GetParameters();
+                try
+                {
+                    if (p.Length == 1 && p[0].ParameterType == typeof(string))
+                    {
+                        method.Invoke(writer, new object[] { path });
+                        return;
+                    }
+                    if (p.Length == 2 && p[0].ParameterType == typeof(string))
+                    {
+                        method.Invoke(writer, new object[] { path, 0 });
+                        return;
+                    }
+                }
+                catch { }
+            }
+
+            throw new InvalidOperationException("STEP writer does not support the expected Write overload.");
+        }
+
+        private static Occt.TopoDS_Shape BuildLineEdgeShape(Vector3 p0, Vector3 p1)
+        {
+            return new Occt.BRepBuilderAPI_MakeEdge(
+                new Occt.gp_Pnt(p0.X, p0.Y, p0.Z),
+                new Occt.gp_Pnt(p1.X, p1.Y, p1.Z)).Edge;
+        }
+
         private void MarkKdDirty() { _kdDirty = true; }
 
         private readonly List<Hx.MeshGeometryModel3D> _overlays = new();
@@ -1747,8 +1854,9 @@ namespace GML_WPF
                         Thickness = 2.0,
                         DepthBias = -100
                     };
+                    var lineShape = BuildLineEdgeShape(p0, p1);
                     View3D.Items.Add(model);
-                    _commandBodies[name] = new CommandBody { Name = name, BodyType = "Line", Model = model, Transform = new Transform3DGroup(), BRepShape = null };
+                    _commandBodies[name] = new CommandBody { Name = name, BodyType = "Line", Model = model, Transform = new Transform3DGroup(), BRepShape = lineShape };
                     AppendOutput($"  Created '{name}' (start=({p0.X:F3},{p0.Y:F3},{p0.Z:F3}), end=({p1.X:F3},{p1.Y:F3},{p1.Z:F3}))");
                     break;
                 }
