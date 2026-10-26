@@ -179,6 +179,8 @@ namespace GML_WPF
                     var ext = Path.GetExtension(dlg.FileName).ToLowerInvariant();
                     if (ext == ".step" || ext == ".stp")
                         LoadStepToViewport(dlg.FileName);
+                    else if (ext == ".gml" || ext == ".txt")
+                        HandleImportCommand(new[] { "import", dlg.FileName });
                     else
                         LoadObjToViewport(dlg.FileName);
                 }
@@ -187,6 +189,11 @@ namespace GML_WPF
                     MessageBox.Show(this, ex.Message, "Failed to load model", MessageBoxButton.OK, MessageBoxImage.Error);
                 }
             }
+        }
+
+        private void ImportMenuItem_Click(object sender, RoutedEventArgs e)
+        {
+            HandleImportCommand(Array.Empty<string>());
         }
 
         private void NearestPointMenuItem_Click(object sender, RoutedEventArgs e)

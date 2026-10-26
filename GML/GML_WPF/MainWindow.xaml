@@ -20,6 +20,7 @@
         <Menu Grid.Row="0">
             <MenuItem Header="_File">
                 <MenuItem Header="_Open..." x:Name="OpenMenuItem" Click="OpenMenuItem_Click" />
+                <MenuItem Header="_Import..." x:Name="ImportMenuItem" Click="ImportMenuItem_Click" />
                 <MenuItem Header="_Export Transformed Points..." x:Name="ExportMenuItem" Click="ExportMenuItem_Click" />
                 <Separator />
                 <MenuItem Header="E_xit" Click="ExitMenuItem_Click" />
@@ -134,13 +135,6 @@
             <StatusBarItem>
                 <TextBlock x:Name="PmiStatusText" Text="(none)" Foreground="DarkCyan" />
             </StatusBarItem>
-            <Separator />
-            <StatusBarItem>
-                <TextBlock Text="FPS:" />
-            </StatusBarItem>
-            <StatusBarItem>
-                <TextBlock Text="{Binding ElementName=View3D, Path=RenderStatistics.FPS, StringFormat=F0}" />
-            </StatusBarItem>
-        </StatusBar>
+            </StatusBar>
     </Grid>
 </Window>
