@@ -43,13 +43,21 @@ namespace GML_WPF
         {
             public string Name = "";
             public string BodyType = "";
-            public Hx.MeshGeometryModel3D Model = null!;
+            public object Model = null!;
             public Transform3DGroup Transform = new();
             public Occt.TopoDS_Shape? BRepShape; // OCCT solid for Boolean operations
         }
 
+        private void RemoveCommandModel(CommandBody body)
+        {
+            if (body.Model is Hx.MeshGeometryModel3D meshModel)
+                View3D.Items.Remove(meshModel);
+            else if (body.Model is Hx.LineGeometryModel3D lineModel)
+                View3D.Items.Remove(lineModel);
+        }
+
         private readonly Dictionary<string, CommandBody> _commandBodies = new(StringComparer.OrdinalIgnoreCase);
-        private int _cubeCount, _cylinderCount, _rectangleCount, _boolCount;
+        private int _cubeCount, _cylinderCount, _rectangleCount, _lineCount, _boolCount;
         private bool _occtConfigured;
         private readonly List<string> _commandHistory = new();
         private int _historyIndex = -1;
@@ -1657,7 +1665,7 @@ namespace GML_WPF
         {
             if (parts.Length < 2)
             {
-                AppendOutput("  Usage: create <cube|cylinder|rectangle> [params...]");
+                AppendOutput("  Usage: create <cube|cylinder|rectangle|line> [params...]");
                 return;
             }
 
@@ -1710,10 +1718,69 @@ namespace GML_WPF
                     AppendOutput($"  Created '{name}' (width={w:F2}, height={h:F2}, depth={d:F2})");
                     break;
                 }
+                case "line":
+                {
+                    if (!TryParseLinePoints(parts, out var p0, out var p1))
+                    {
+                        AppendOutput("  Usage: create line x0,y0,z0 x1,y1,z1   or   create line x0,y0,z0,x1,y1,z1");
+                        return;
+                    }
+
+                    var name = $"Line_{++_lineCount}";
+                    var positions = new HT.Vector3Collection
+                    {
+                        p0,
+                        p1
+                    };
+                    var indices = new HT.IntCollection
+                    {
+                        0, 1
+                    };
+                    var model = new Hx.LineGeometryModel3D
+                    {
+                        Geometry = new HxSharpDX.LineGeometry3D
+                        {
+                            Positions = positions,
+                            Indices = indices
+                        },
+                        Color = Colors.White,
+                        Thickness = 2.0,
+                        DepthBias = -100
+                    };
+                    View3D.Items.Add(model);
+                    _commandBodies[name] = new CommandBody { Name = name, BodyType = "Line", Model = model, Transform = new Transform3DGroup(), BRepShape = null };
+                    AppendOutput($"  Created '{name}' (start=({p0.X:F3},{p0.Y:F3},{p0.Z:F3}), end=({p1.X:F3},{p1.Y:F3},{p1.Z:F3}))");
+                    break;
+                }
                 default:
-                    AppendOutput($"  Unknown shape '{parts[1]}'. Available: cube, cylinder, rectangle");
+                    AppendOutput($"  Unknown shape '{parts[1]}'. Available: cube, cylinder, rectangle, line");
                     break;
             }
+        }
+
+        private static bool TryParseLinePoints(string[] parts, out Vector3 p0, out Vector3 p1)
+        {
+            p0 = default;
+            p1 = default;
+
+            if (parts.Length < 4) return false;
+
+            var values = new List<double>();
+            for (int i = 2; i < parts.Length; i++)
+            {
+                var token = parts[i].Trim();
+                if (string.IsNullOrEmpty(token)) continue;
+                foreach (var part in token.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                {
+                    if (double.TryParse(part, out var v)) values.Add(v);
+                    else return false;
+                }
+            }
+
+            if (values.Count != 6) return false;
+            p0 = new Vector3((float)values[0], (float)values[1], (float)values[2]);
+            p1 = new Vector3((float)values[3], (float)values[4], (float)values[5]);
+            return true;
         }
 
         private void AddCommandBody(string name, string bodyType, HxSharpDX.MeshGeometry3D geom, Occt.TopoDS_Shape? brepShape = null)
@@ -1821,7 +1888,7 @@ namespace GML_WPF
                 AppendOutput($"  Body '{parts[1]}' not found.");
                 return;
             }
-            View3D.Items.Remove(body.Model);
+            RemoveCommandModel(body);
             _commandBodies.Remove(parts[1]);
             AppendOutput($"  Deleted '{body.Name}'");
         }
@@ -1959,6 +2026,7 @@ namespace GML_WPF
             AppendOutput("    create cube [size]                          - Create a cube (default size=2)");
             AppendOutput("    create cylinder [radius] [height]           - Create a cylinder (default r=1, h=3)");
             AppendOutput("    create rectangle [width] [height] [depth]   - Create a box (default 3x2x1)");
+            AppendOutput("    create line x0,y0,z0 x1,y1,z1               - Create a single line segment");
             AppendOutput("    translate <name> dx,dy,dz                   - Translate a body");
             AppendOutput("    rotate <name> angle,ax,ay,az                - Rotate a body (degrees)");
             AppendOutput("    scale <name> sx,sy,sz                       - Scale a body");
@@ -2095,8 +2163,8 @@ namespace GML_WPF
                 }
 
                 // Remove the two operand bodies from the scene
-                View3D.Items.Remove(bodyA.Model);
-                View3D.Items.Remove(bodyB.Model);
+                RemoveCommandModel(bodyA);
+                RemoveCommandModel(bodyB);
                 _commandBodies.Remove(bodyA.Name);
                 _commandBodies.Remove(bodyB.Name);
 
