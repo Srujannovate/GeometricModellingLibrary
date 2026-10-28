@@ -49,6 +49,14 @@ namespace GML_WPF
             public Occt.TopoDS_Shape? BRepShape; // OCCT solid for Boolean operations
         }
 
+        private sealed class OcctPickEntity
+        {
+            public string Name = "";
+            public string EntityType = "";
+            public Occt.TopoDS_Shape Shape = null!;
+            public Transform3DGroup Transform = new();
+        }
+
         private void RemoveCommandModel(CommandBody body)
         {
             if (body.Model is Hx.MeshGeometryModel3D meshModel)
@@ -57,7 +65,13 @@ namespace GML_WPF
                 View3D.Items.Remove(lineModel);
         }
 
+        private void RemoveOcctPickEntity(string name)
+        {
+            _occtPickEntities.RemoveAll(entity => string.Equals(entity.Name, name, StringComparison.OrdinalIgnoreCase));
+        }
+
         private readonly Dictionary<string, CommandBody> _commandBodies = new(StringComparer.OrdinalIgnoreCase);
+        private readonly List<OcctPickEntity> _occtPickEntities = new();
         private int _cubeCount, _cylinderCount, _rectangleCount, _lineCount, _boolCount;
         private bool _occtConfigured;
         private readonly List<string> _commandHistory = new();
@@ -254,6 +268,7 @@ namespace GML_WPF
                 if (t.Model != null) View3D.Items.Remove(t.Model);
             }
             _triangulations.Clear();
+            _occtPickEntities.Clear();
 
             ClearEdgeModels();
 
@@ -265,6 +280,14 @@ namespace GML_WPF
                 out var lineIndices,
                 out var linePositions,
                 readPmi: true);
+
+            var importedShape = ReadStepShape(path);
+            _occtPickEntities.Add(new OcctPickEntity
+            {
+                Name = "ImportedModel",
+                EntityType = "STEP model",
+                Shape = importedShape
+            });
 
             // Create a Triangulation and add to viewport
             var tri = new Triangulation();
@@ -409,6 +432,12 @@ namespace GML_WPF
             else
             {
                 ClearPmiSelection();
+                var entity = HitTestEntity(pos);
+                if (entity != null)
+                {
+                    AppendOutput($"  Selected entity: {entity}");
+                    e.Handled = true;
+                }
             }
         }
 
@@ -454,45 +483,199 @@ namespace GML_WPF
         {
             try
             {
-                // HelixToolkit 3.x FindHits lives on ViewportExtensions (extension method) and the
-                // HitTestResult type is in HelixToolkit.SharpDX, not HelixToolkit.Wpf.SharpDX.
-                // Use reflection so we tolerate minor API drift between versions.
-                var vptType = View3D.GetType();
-                var vptExt  = vptType.Assembly.GetType("HelixToolkit.Wpf.SharpDX.ViewportExtensions");
-                System.Collections.IList? hits = null;
-                if (vptExt != null)
+                foreach (var modelHit in FindHitModels(pos))
                 {
-                    var method = vptExt.GetMethods(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static)
-                        .FirstOrDefault(m => m.Name == "FindHits" && m.GetParameters().Length >= 2);
-                    if (method != null)
-                    {
-                        var hitsArg = Activator.CreateInstance(typeof(List<>).MakeGenericType(
-                            method.GetParameters()[1].ParameterType.IsByRef
-                                ? method.GetParameters()[1].ParameterType.GetElementType()!.GetGenericArguments()[0]
-                                : typeof(object)));
-                        var args = new object?[method.GetParameters().Length];
-                        args[0] = pos;
-                        args[1] = hitsArg;
-                        method.Invoke(View3D, args);
-                        hits = args[1] as System.Collections.IList;
-                    }
-                }
-                if (hits != null)
-                {
-                    foreach (var h in hits)
-                    {
-                        var modelHit = h?.GetType().GetProperty("ModelHit")?.GetValue(h);
-                        if (modelHit is Hx.Element3D el && _pmiByElement.TryGetValue(el, out var ann))
-                            return ann;
-                        // Some HelixToolkit builds wrap the element inside a SceneNode.WrapperSource
-                        var wrapperProp = modelHit?.GetType().GetProperty("WrapperSource");
-                        if (wrapperProp?.GetValue(modelHit) is Hx.Element3D wEl && _pmiByElement.TryGetValue(wEl, out var wAnn))
-                            return wAnn;
-                    }
+                    if (modelHit is Hx.Element3D el && _pmiByElement.TryGetValue(el, out var ann))
+                        return ann;
                 }
             }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[PMI hit] {ex.Message}"); }
             return null;
+        }
+
+        private string? HitTestEntity(System.Windows.Point pos)
+        {
+            try
+            {
+                if (!TryGetPickRay(pos, out var rayStart, out var rayEnd))
+                    return null;
+
+                var ray = rayEnd - rayStart;
+                var rayLength = ray.Length();
+                if (rayLength < 1e-6f)
+                    return null;
+
+                var bestDistance = double.PositiveInfinity;
+                OcctPickEntity? best = null;
+                for (int i = 0; i <= 96; i++)
+                {
+                    var point = rayStart + ray * (i / 96.0f);
+                    var vertex = new Occt.BRepBuilderAPI_MakeVertex(
+                        new Occt.gp_Pnt(point.X, point.Y, point.Z)).Vertex;
+                    foreach (var entity in _occtPickEntities)
+                    {
+                        if (!TryGetOcctDistance(vertex, entity.Shape, out var distance))
+                            continue;
+                        if (distance < bestDistance)
+                        {
+                            bestDistance = distance;
+                            best = entity;
+                        }
+                    }
+                }
+
+                var tolerance = Math.Max(0.05, rayLength * 0.01);
+                if (best != null && bestDistance <= tolerance)
+                    return $"{best.Name} [{best.EntityType}]";
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[Entity hit] {ex.Message}");
+            }
+
+            return null;
+        }
+
+        private bool TryGetPickRay(System.Windows.Point position, out Vector3 near, out Vector3 far)
+        {
+            near = default;
+            far = default;
+            foreach (var method in View3D.GetType().GetMethods(BindingFlags.Public | BindingFlags.Instance)
+                         .Where(m => m.Name == "UnProject"))
+            {
+                var parameters = method.GetParameters();
+                if (!parameters.Any(p => p.ParameterType == typeof(System.Windows.Point)))
+                    continue;
+                var vectorParameters = parameters
+                    .Select((p, index) => (p, index))
+                    .Where(x => x.p.ParameterType.IsByRef && x.p.ParameterType.GetElementType() == typeof(Vector3))
+                    .Select(x => x.index)
+                    .ToArray();
+                if (vectorParameters.Length < 2)
+                    continue;
+
+                var args = new object?[parameters.Length];
+                for (int i = 0; i < parameters.Length; i++)
+                {
+                    if (parameters[i].ParameterType == typeof(System.Windows.Point))
+                        args[i] = position;
+                    else if (parameters[i].ParameterType.IsByRef)
+                        args[i] = default(Vector3);
+                    else if (parameters[i].HasDefaultValue)
+                        args[i] = parameters[i].DefaultValue;
+                    else
+                        args[i] = parameters[i].ParameterType.IsValueType
+                            ? Activator.CreateInstance(parameters[i].ParameterType)
+                            : null;
+                }
+
+                try
+                {
+                    method.Invoke(View3D, args);
+                    near = (Vector3)args[vectorParameters[0]]!;
+                    far = (Vector3)args[vectorParameters[1]]!;
+                    return true;
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"[UnProject] {ex.Message}");
+                }
+            }
+            return false;
+        }
+
+        private static bool TryGetOcctDistance(Occt.TopoDS_Shape first, Occt.TopoDS_Shape second, out double distance)
+        {
+            distance = double.PositiveInfinity;
+            var type = typeof(Occt.STEPControl_Reader).Assembly.GetType("Occt.BRepExtrema_DistShapeShape");
+            if (type == null)
+                return false;
+
+            try
+            {
+                var distanceObject = Activator.CreateInstance(type, first, second);
+                if (distanceObject == null)
+                    return false;
+                var isDone = type.GetMethod("IsDone", Type.EmptyTypes)?.Invoke(distanceObject, null);
+                if (isDone is bool done && !done)
+                    return false;
+                var value = type.GetMethod("Value", Type.EmptyTypes)?.Invoke(distanceObject, null);
+                if (value == null)
+                    return false;
+                distance = Convert.ToDouble(value);
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private IList<object> FindHitModels(System.Windows.Point pos)
+        {
+            var result = new List<object>();
+            var vptType = View3D.GetType();
+            var vptExt = vptType.Assembly.GetType("HelixToolkit.Wpf.SharpDX.ViewportExtensions");
+            if (vptExt == null) return result;
+
+            foreach (var method in vptExt.GetMethods(BindingFlags.Public | BindingFlags.Static)
+                         .Where(m => m.Name == "FindHits"))
+            {
+                var parameters = method.GetParameters();
+                if (!parameters.Any(p => p.ParameterType == typeof(System.Windows.Point)) ||
+                    !parameters.Any(p => p.ParameterType.IsByRef || typeof(System.Collections.IList).IsAssignableFrom(p.ParameterType)))
+                    continue;
+
+                var args = new object?[parameters.Length];
+                int hitIndex = -1;
+                try
+                {
+                    for (int i = 0; i < parameters.Length; i++)
+                    {
+                        var parameterType = parameters[i].ParameterType;
+                        if (parameterType == typeof(System.Windows.Point))
+                            args[i] = pos;
+                        else if (parameterType.IsInstanceOfType(View3D))
+                            args[i] = View3D;
+                        else if (parameterType.IsByRef)
+                        {
+                            var hitType = parameterType.GetElementType()!;
+                            var itemType = hitType.IsGenericType ? hitType.GetGenericArguments()[0] : typeof(object);
+                            args[i] = Activator.CreateInstance(typeof(List<>).MakeGenericType(itemType));
+                            hitIndex = i;
+                        }
+                        else if (typeof(System.Collections.IList).IsAssignableFrom(parameterType))
+                        {
+                            args[i] = new List<object>();
+                            hitIndex = i;
+                        }
+                        else if (parameters[i].HasDefaultValue)
+                            args[i] = parameters[i].DefaultValue;
+                        else
+                            args[i] = parameterType.IsValueType ? Activator.CreateInstance(parameterType) : null;
+                    }
+
+                    method.Invoke(null, args);
+                    var hits = hitIndex >= 0 ? args[hitIndex] as System.Collections.IEnumerable : null;
+                    if (hits == null && method.ReturnType != typeof(void))
+                        hits = method.Invoke(null, args) as System.Collections.IEnumerable;
+                    if (hits == null) continue;
+
+                    foreach (var hit in hits)
+                    {
+                        var modelHit = hit?.GetType().GetProperty("ModelHit")?.GetValue(hit) ?? hit;
+                        if (modelHit != null) result.Add(modelHit);
+                        var wrapper = modelHit?.GetType().GetProperty("WrapperSource")?.GetValue(modelHit);
+                        if (wrapper != null) result.Add(wrapper);
+                    }
+                    if (result.Count > 0) return result;
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"[HitTest] {method}: {ex.Message}");
+                }
+            }
+            return result;
         }
 
         private void SelectPmi(PmiAnnotation ann)
@@ -696,6 +879,7 @@ namespace GML_WPF
                 if (t.Model != null) View3D.Items.Remove(t.Model);
             }
             _triangulations.Clear();
+            _occtPickEntities.Clear();
             ClearEdgeModels();
             ClearPmiModels();
             _pmi = null;
@@ -726,6 +910,23 @@ namespace GML_WPF
 
                 tri.Positions = positions[indx].ToArray();
                 tri.Indices = indices[indx].ToArray();
+
+                for (int triangleIndex = 0; triangleIndex + 2 < tri.Indices.Length; triangleIndex += 3)
+                {
+                    var p0 = tri.Positions[tri.Indices[triangleIndex]];
+                    var p1 = tri.Positions[tri.Indices[triangleIndex + 1]];
+                    var p2 = tri.Positions[tri.Indices[triangleIndex + 2]];
+                    var face = BuildOcctTriangleFace(p0, p1, p2);
+                    if (face != null)
+                    {
+                        _occtPickEntities.Add(new OcctPickEntity
+                        {
+                            Name = $"Face_{indx + 1}_{triangleIndex / 3 + 1}",
+                            EntityType = "OBJ face",
+                            Shape = face
+                        });
+                    }
+                }
 
                 // Share the Transform3DGroup instance with the triangulation
                 model.Transform = tri.Transform;
@@ -1120,6 +1321,32 @@ namespace GML_WPF
             return new Occt.BRepBuilderAPI_MakeEdge(
                 new Occt.gp_Pnt(p0.X, p0.Y, p0.Z),
                 new Occt.gp_Pnt(p1.X, p1.Y, p1.Z)).Edge;
+        }
+
+        private static Occt.TopoDS_Shape ReadStepShape(string path)
+        {
+            OcctConfiguration.Configure();
+            var reader = new Occt.STEPControl_Reader();
+            var status = reader.ReadFile(path);
+            if (status != Occt.IFSelect_ReturnStatus.IFSelect_RetDone)
+                throw new InvalidOperationException($"Failed to create OCCT model from {Path.GetFileName(path)}.");
+            reader.TransferRoots();
+            var shape = reader.OneShape();
+            if (shape == null || shape.IsNull)
+                throw new InvalidOperationException($"The imported STEP model is empty: {Path.GetFileName(path)}.");
+            return shape;
+        }
+
+        private static Occt.TopoDS_Shape? BuildOcctTriangleFace(Vector3 p0, Vector3 p1, Vector3 p2)
+        {
+            var a = new Occt.gp_Pnt(p0.X, p0.Y, p0.Z);
+            var b = new Occt.gp_Pnt(p1.X, p1.Y, p1.Z);
+            var c = new Occt.gp_Pnt(p2.X, p2.Y, p2.Z);
+            if (Vector3.DistanceSquared(p0, p1) < 1e-12 || Vector3.DistanceSquared(p0, p2) < 1e-12)
+                return null;
+
+            var polygon = new Occt.BRepBuilderAPI_MakePolygon(a, b, c, true);
+            return new Occt.BRepBuilderAPI_MakeFace(polygon.Wire).Face;
         }
 
         private void MarkKdDirty() { _kdDirty = true; }
@@ -1857,6 +2084,7 @@ namespace GML_WPF
                     var lineShape = BuildLineEdgeShape(p0, p1);
                     View3D.Items.Add(model);
                     _commandBodies[name] = new CommandBody { Name = name, BodyType = "Line", Model = model, Transform = new Transform3DGroup(), BRepShape = lineShape };
+                    _occtPickEntities.Add(new OcctPickEntity { Name = name, EntityType = "Line", Shape = lineShape, Transform = _commandBodies[name].Transform });
                     AppendOutput($"  Created '{name}' (start=({p0.X:F3},{p0.Y:F3},{p0.Z:F3}), end=({p1.X:F3},{p1.Y:F3},{p1.Z:F3}))");
                     break;
                 }
@@ -1906,6 +2134,8 @@ namespace GML_WPF
             };
             View3D.Items.Add(model);
             _commandBodies[name] = new CommandBody { Name = name, BodyType = bodyType, Model = model, Transform = transform, BRepShape = brepShape };
+            if (brepShape != null)
+                _occtPickEntities.Add(new OcctPickEntity { Name = name, EntityType = bodyType, Shape = brepShape, Transform = transform });
         }
 
         private void AddCommandBodyFromBrep(string name, string bodyType, Occt.TopoDS_Shape brepShape)
@@ -1997,6 +2227,7 @@ namespace GML_WPF
                 return;
             }
             RemoveCommandModel(body);
+            RemoveOcctPickEntity(body.Name);
             _commandBodies.Remove(parts[1]);
             AppendOutput($"  Deleted '{body.Name}'");
         }
@@ -2273,6 +2504,8 @@ namespace GML_WPF
                 // Remove the two operand bodies from the scene
                 RemoveCommandModel(bodyA);
                 RemoveCommandModel(bodyB);
+                RemoveOcctPickEntity(bodyA.Name);
+                RemoveOcctPickEntity(bodyB.Name);
                 _commandBodies.Remove(bodyA.Name);
                 _commandBodies.Remove(bodyB.Name);
 
