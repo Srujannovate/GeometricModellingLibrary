@@ -1,4 +1,3 @@
-using Assimp;
 using GML_WPF.Pmi;
 using GMLModel;
 using GMLModel.Pmi;
@@ -63,6 +62,8 @@ namespace GML_WPF
                 View3D.Items.Remove(meshModel);
             else if (body.Model is Hx.LineGeometryModel3D lineModel)
                 View3D.Items.Remove(lineModel);
+            else if (body.Model is Hx.BillboardTextModel3D textModel)
+                View3D.Items.Remove(textModel);
         }
 
         private void RemoveOcctPickEntity(string name)
@@ -72,7 +73,7 @@ namespace GML_WPF
 
         private readonly Dictionary<string, CommandBody> _commandBodies = new(StringComparer.OrdinalIgnoreCase);
         private readonly List<OcctPickEntity> _occtPickEntities = new();
-        private int _cubeCount, _cylinderCount, _rectangleCount, _lineCount, _boolCount;
+        private int _cubeCount, _cylinderCount, _rectangleCount, _lineCount, _textCount, _boolCount;
         private bool _occtConfigured;
         private readonly List<string> _commandHistory = new();
         private int _historyIndex = -1;
@@ -1339,14 +1340,38 @@ namespace GML_WPF
 
         private static Occt.TopoDS_Shape? BuildOcctTriangleFace(Vector3 p0, Vector3 p1, Vector3 p2)
         {
+            var normal = Vector3.Cross(p1 - p0, p2 - p0);
+            if (!float.IsFinite(normal.X) || !float.IsFinite(normal.Y) || !float.IsFinite(normal.Z) ||
+                normal.LengthSquared() < 1e-12f)
+                return null;
+
             var a = new Occt.gp_Pnt(p0.X, p0.Y, p0.Z);
             var b = new Occt.gp_Pnt(p1.X, p1.Y, p1.Z);
             var c = new Occt.gp_Pnt(p2.X, p2.Y, p2.Z);
-            if (Vector3.DistanceSquared(p0, p1) < 1e-12 || Vector3.DistanceSquared(p0, p2) < 1e-12)
-                return null;
 
-            var polygon = new Occt.BRepBuilderAPI_MakePolygon(a, b, c, true);
-            return new Occt.BRepBuilderAPI_MakeFace(polygon.Wire).Face;
+            try
+            {
+                var polygon = new Occt.BRepBuilderAPI_MakePolygon(a, b, c, true);
+                var face = new Occt.BRepBuilderAPI_MakeFace(polygon.Wire).Face;
+                if (face != null && !face.IsNull)
+                    return face;
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[OBJ OCCT face] {ex.Message}");
+            }
+
+            // Some OCCT.NET builds reject a polygon face for imported mesh
+            // triangles. Keep the triangle selectable as an OCCT edge rather
+            // than allowing one malformed face to abort the whole OBJ import.
+            try
+            {
+                return new Occt.BRepBuilderAPI_MakeEdge(a, b).Edge;
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         private void MarkKdDirty() { _kdDirty = true; }
@@ -2088,10 +2113,63 @@ namespace GML_WPF
                     AppendOutput($"  Created '{name}' (start=({p0.X:F3},{p0.Y:F3},{p0.Z:F3}), end=({p1.X:F3},{p1.Y:F3},{p1.Z:F3}))");
                     break;
                 }
+                case "text":
+                {
+                    if (parts.Length < 4 || !TryParse3(parts[2], out var x, out var y, out var z))
+                    {
+                        AppendOutput("  Usage: create text x,y,z \"label\"");
+                        return;
+                    }
+
+                    var label = string.Join(' ', parts, 3, parts.Length - 3).Trim().Trim('"');
+                    if (string.IsNullOrWhiteSpace(label))
+                    {
+                        AppendOutput("  Text label cannot be empty.");
+                        return;
+                    }
+
+                    var name = $"Text_{++_textCount}";
+                    var textInfo = new HxSharpDX.TextInfo(label, new Vector3((float)x, (float)y, (float)z))
+                    {
+                        Scale = 1.0f
+                    };
+                    SetTextColor(textInfo, Colors.White);
+                    var textModel = new Hx.BillboardTextModel3D
+                    {
+                        Geometry = new HxSharpDX.BillboardSingleText3D { TextInfo = textInfo },
+                        FixedSize = true
+                    };
+                    View3D.Items.Add(textModel);
+                    _commandBodies[name] = new CommandBody
+                    {
+                        Name = name,
+                        BodyType = "Text",
+                        Model = textModel,
+                        Transform = new Transform3DGroup(),
+                        BRepShape = null
+                    };
+                    AppendOutput($"  Created '{name}' (label=\"{label}\", position=({x:F3},{y:F3},{z:F3}))");
+                    break;
+                }
                 default:
-                    AppendOutput($"  Unknown shape '{parts[1]}'. Available: cube, cylinder, rectangle, line");
+                    AppendOutput($"  Unknown shape '{parts[1]}'. Available: cube, cylinder, rectangle, line, text");
                     break;
             }
+        }
+
+        private static void SetTextColor(HxSharpDX.TextInfo textInfo, Color color)
+        {
+            var textInfoType = textInfo.GetType();
+            var colorType = textInfoType.Assembly.GetType("SharpDX.Color4");
+            var colorConstructor = colorType?.GetConstructor(new[]
+            {
+                typeof(float), typeof(float), typeof(float), typeof(float)
+            });
+            var foreground = colorConstructor?.Invoke(new object[]
+            {
+                color.R / 255.0f, color.G / 255.0f, color.B / 255.0f, color.A / 255.0f
+            });
+            textInfoType.GetProperty("Foreground")?.SetValue(textInfo, foreground);
         }
 
         private static bool TryParseLinePoints(string[] parts, out Vector3 p0, out Vector3 p1)
@@ -2366,6 +2444,7 @@ namespace GML_WPF
             AppendOutput("    create cylinder [radius] [height]           - Create a cylinder (default r=1, h=3)");
             AppendOutput("    create rectangle [width] [height] [depth]   - Create a box (default 3x2x1)");
             AppendOutput("    create line x0,y0,z0 x1,y1,z1               - Create a single line segment");
+            AppendOutput("    create text x,y,z \"label\"                   - Render engineering drawing text");
             AppendOutput("    translate <name> dx,dy,dz                   - Translate a body");
             AppendOutput("    rotate <name> angle,ax,ay,az                - Rotate a body (degrees)");
             AppendOutput("    scale <name> sx,sy,sz                       - Scale a body");
