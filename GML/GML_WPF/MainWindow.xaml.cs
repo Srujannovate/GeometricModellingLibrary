@@ -912,12 +912,24 @@ namespace GML_WPF
                 tri.Positions = positions[indx].ToArray();
                 tri.Indices = indices[indx].ToArray();
 
-                for (int triangleIndex = 0; triangleIndex + 2 < tri.Indices.Length; triangleIndex += 3)
+                // Per-triangle OCCT faces are expensive; cap to keep large OBJ files loadable.
+                const int MaxObjOcctFaces = 5000;
+                for (int triangleIndex = 0; triangleIndex + 2 < tri.Indices.Length && triangleIndex / 3 < MaxObjOcctFaces; triangleIndex += 3)
                 {
                     var p0 = tri.Positions[tri.Indices[triangleIndex]];
                     var p1 = tri.Positions[tri.Indices[triangleIndex + 1]];
                     var p2 = tri.Positions[tri.Indices[triangleIndex + 2]];
-                    var face = BuildOcctTriangleFace(p0, p1, p2);
+                    Occt.TopoDS_Shape? face;
+                    try
+                    {
+                        face = BuildOcctTriangleFace(p0, p1, p2);
+                    }
+                    catch (Exception ex)
+                    {
+                        // OCCT pick shapes are optional; never let them abort the import.
+                        System.Diagnostics.Debug.WriteLine($"[OBJ OCCT] triangle {triangleIndex / 3}: {ex.Message}");
+                        face = null;
+                    }
                     if (face != null)
                     {
                         _occtPickEntities.Add(new OcctPickEntity
@@ -1340,36 +1352,61 @@ namespace GML_WPF
 
         private static Occt.TopoDS_Shape? BuildOcctTriangleFace(Vector3 p0, Vector3 p1, Vector3 p2)
         {
-            var normal = Vector3.Cross(p1 - p0, p2 - p0);
-            if (!float.IsFinite(normal.X) || !float.IsFinite(normal.Y) || !float.IsFinite(normal.Z) ||
-                normal.LengthSquared() < 1e-12f)
+            // Validate in double precision. OCCT throws native exceptions
+            // (surfacing as SEHException) for coincident points, edges shorter
+            // than Precision::Confusion (1e-7) or collinear vertices.
+            const double confusion = 1e-6; // a bit above OCCT's 1e-7 for float data
+            double ax = p0.X, ay = p0.Y, az = p0.Z;
+            double bx = p1.X, by = p1.Y, bz = p1.Z;
+            double cx = p2.X, cy = p2.Y, cz = p2.Z;
+            if (!double.IsFinite(ax + ay + az + bx + by + bz + cx + cy + cz))
                 return null;
 
-            var a = new Occt.gp_Pnt(p0.X, p0.Y, p0.Z);
-            var b = new Occt.gp_Pnt(p1.X, p1.Y, p1.Z);
-            var c = new Occt.gp_Pnt(p2.X, p2.Y, p2.Z);
+            static double Dist(double x0, double y0, double z0, double x1, double y1, double z1)
+            {
+                double dx = x1 - x0, dy = y1 - y0, dz = z1 - z0;
+                return Math.Sqrt(dx * dx + dy * dy + dz * dz);
+            }
+
+            double ab = Dist(ax, ay, az, bx, by, bz);
+            double bc = Dist(bx, by, bz, cx, cy, cz);
+            double ca = Dist(cx, cy, cz, ax, ay, az);
+            if (ab <= confusion || bc <= confusion || ca <= confusion)
+                return null;
+
+            // Reject (near-)collinear triangles: twice the area vs. longest edge squared.
+            double ux = bx - ax, uy = by - ay, uz = bz - az;
+            double vx = cx - ax, vy = cy - ay, vz = cz - az;
+            double nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+            double area2 = Math.Sqrt(nx * nx + ny * ny + nz * nz);
+            double longest = Math.Max(ab, Math.Max(bc, ca));
+            if (area2 <= 1e-9 * longest * longest)
+                return null;
 
             try
             {
-                var polygon = new Occt.BRepBuilderAPI_MakePolygon(a, b, c, true);
-                var face = new Occt.BRepBuilderAPI_MakeFace(polygon.Wire).Face;
-                if (face != null && !face.IsNull)
-                    return face;
+                var a = new Occt.gp_Pnt(ax, ay, az);
+                var b = new Occt.gp_Pnt(bx, by, bz);
+                var c = new Occt.gp_Pnt(cx, cy, cz);
+
+                try
+                {
+                    var polygon = new Occt.BRepBuilderAPI_MakePolygon(a, b, c, true);
+                    var face = new Occt.BRepBuilderAPI_MakeFace(polygon.Wire).Face;
+                    if (face != null && !face.IsNull)
+                        return face;
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"[OBJ OCCT face] {ex.Message}");
+                }
+
+                // Fall back to an edge so the triangle stays pickable.
+                return new Occt.BRepBuilderAPI_MakeEdge(a, b).Edge;
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"[OBJ OCCT face] {ex.Message}");
-            }
-
-            // Some OCCT.NET builds reject a polygon face for imported mesh
-            // triangles. Keep the triangle selectable as an OCCT edge rather
-            // than allowing one malformed face to abort the whole OBJ import.
-            try
-            {
-                return new Occt.BRepBuilderAPI_MakeEdge(a, b).Edge;
-            }
-            catch
-            {
+                System.Diagnostics.Debug.WriteLine($"[OBJ OCCT edge] {ex.Message}");
                 return null;
             }
         }
@@ -2133,10 +2170,15 @@ namespace GML_WPF
                     {
                         Scale = 1.0f
                     };
-                    SetTextColor(textInfo, Colors.White);
+                    // BillboardSingleText3D renders with its own FontColor;
+                    // TextInfo's foreground is ignored for single-text billboards.
                     var textModel = new Hx.BillboardTextModel3D
                     {
-                        Geometry = new HxSharpDX.BillboardSingleText3D { TextInfo = textInfo },
+                        Geometry = new HxSharpDX.BillboardSingleText3D
+                        {
+                            TextInfo = textInfo,
+                            FontColor = new HT.Maths.Color4(1f, 0f, 0f, 1f) // red
+                        },
                         FixedSize = true
                     };
                     View3D.Items.Add(textModel);
@@ -2160,7 +2202,13 @@ namespace GML_WPF
         private static void SetTextColor(HxSharpDX.TextInfo textInfo, Color color)
         {
             var textInfoType = textInfo.GetType();
-            var colorType = textInfoType.Assembly.GetType("SharpDX.Color4");
+            var foregroundProperty = textInfoType.GetProperty("Foreground");
+            if (foregroundProperty == null || !foregroundProperty.CanWrite)
+                return;
+
+            // TextInfo.Foreground is SharpDX.Color4, which may be loaded from
+            // a different assembly than TextInfo depending on the Helix version.
+            var colorType = foregroundProperty.PropertyType;
             var colorConstructor = colorType?.GetConstructor(new[]
             {
                 typeof(float), typeof(float), typeof(float), typeof(float)
@@ -2169,7 +2217,8 @@ namespace GML_WPF
             {
                 color.R / 255.0f, color.G / 255.0f, color.B / 255.0f, color.A / 255.0f
             });
-            textInfoType.GetProperty("Foreground")?.SetValue(textInfo, foreground);
+            if (foreground != null)
+                foregroundProperty.SetValue(textInfo, foreground);
         }
 
         private static bool TryParseLinePoints(string[] parts, out Vector3 p0, out Vector3 p1)

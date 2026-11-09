@@ -74,9 +74,16 @@ namespace GML_WPF.Pmi
             };
             ApplyTextColors(textInfo, ColorFor(ann.Kind), backgroundAlpha: 0.7f);
 
+            var fg = ColorFor(ann.Kind);
             var billboard = new Hx.BillboardTextModel3D
             {
-                Geometry = new HxSharpDX.BillboardSingleText3D { TextInfo = textInfo },
+                // BillboardSingleText3D draws with its own FontColor/BackgroundColor.
+                Geometry = new HxSharpDX.BillboardSingleText3D
+                {
+                    TextInfo = textInfo,
+                    FontColor = ToColor4(fg),
+                    BackgroundColor = new HT.Maths.Color4(0f, 0f, 0f, 0.7f)
+                },
                 FixedSize = true,
             };
             list.Add(billboard);
@@ -94,6 +101,14 @@ namespace GML_WPF.Pmi
             }
 
             return list;
+        }
+
+        public static HT.Maths.Color4 ToColor4(Color c, float? alpha = null)
+            => new HT.Maths.Color4(c.R / 255f, c.G / 255f, c.B / 255f, alpha ?? c.A / 255f);
+
+        public static void SetTextColor(HxSharpDX.TextInfo info, Color foreground)
+        {
+            ApplyTextColors(info, foreground, backgroundAlpha: 0f);
         }
 
         private static Hx.LineGeometryModel3D BuildLeader(IList<Vector3> polyline, double sceneScale, PmiKind kind)
@@ -198,20 +213,30 @@ namespace GML_WPF.Pmi
 
         private static object? MakeColor4(Color c, float alpha = 1f)
         {
-            if (s_color4Ctor == null) return null;
-            return s_color4Ctor.Invoke(new object[] { c.R / 255f, c.G / 255f, c.B / 255f, alpha });
+            var ctor = s_color4Ctor;
+            if (ctor == null)
+            {
+                var type = ResolveColor4Type();
+                ctor = type?.GetConstructor(new[]
+                {
+                    typeof(float), typeof(float), typeof(float), typeof(float)
+                });
+            }
+            if (ctor == null) return null;
+            return ctor.Invoke(new object[] { c.R / 255f, c.G / 255f, c.B / 255f, alpha });
         }
 
         private static void ApplyTextColors(HxSharpDX.TextInfo info, Color foreground, float backgroundAlpha)
         {
-            if (s_color4Type == null) return;
             var type = info.GetType();
             var fg = type.GetProperty("Foreground");
             var bg = type.GetProperty("Background");
             try
             {
-                fg?.SetValue(info, MakeColor4(foreground, 1f));
-                bg?.SetValue(info, MakeColor4(Colors.Black, backgroundAlpha));
+                var foregroundValue = MakeColor4(foreground, 1f);
+                var backgroundValue = MakeColor4(Colors.Black, backgroundAlpha);
+                if (foregroundValue != null) fg?.SetValue(info, foregroundValue);
+                if (backgroundValue != null) bg?.SetValue(info, backgroundValue);
             }
             catch { /* older HelixToolkit lacks these; text will render with defaults */ }
         }
