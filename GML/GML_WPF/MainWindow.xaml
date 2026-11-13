@@ -58,6 +58,9 @@
                 <Separator />
                 <MenuItem Header="Nearest Point..." Click="NearestPointMenuItem_Click" />
             </MenuItem>
+            <MenuItem Header="B_olt">
+                <MenuItem Header="Manufacturing _Drawings..." Click="BoltDrawingsMenuItem_Click" />
+            </MenuItem>
             <MenuItem Header="_Help">
                 <MenuItem Header="About" />
             </MenuItem>

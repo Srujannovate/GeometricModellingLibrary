@@ -1,0 +1,187 @@
+<Window x:Class="GML_WPF.Bolt.BoltDrawingWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Bolt Manufacturing Drawings" Height="780" Width="1320"
+        WindowStartupLocation="CenterOwner" MinWidth="900" MinHeight="560">
+    <Window.Resources>
+        <Style TargetType="Label">
+            <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="Padding" Value="0,2,6,2" />
+        </Style>
+        <Style TargetType="ComboBox">
+            <Setter Property="Margin" Value="0,2" />
+            <Setter Property="MinHeight" Value="22" />
+        </Style>
+        <Style TargetType="TextBox">
+            <Setter Property="Margin" Value="0,2" />
+            <Setter Property="MinHeight" Value="22" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+        </Style>
+        <Style TargetType="GroupBox">
+            <Setter Property="Margin" Value="0,0,0,8" />
+            <Setter Property="Padding" Value="6,4" />
+        </Style>
+    </Window.Resources>
+
+    <Grid>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="310" />
+            <ColumnDefinition Width="Auto" />
+            <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+
+        <!-- Parameters -->
+        <DockPanel Grid.Column="0" Margin="8">
+            <StackPanel DockPanel.Dock="Bottom" Margin="0,6,0,0">
+                <TextBlock x:Name="DesignationText" FontWeight="Bold" TextWrapping="Wrap" Margin="0,0,0,4" />
+                <TextBlock x:Name="ValidationText" Foreground="#B00020" TextWrapping="Wrap" Margin="0,0,0,6"
+                           AutomationProperties.LiveSetting="Assertive" />
+                <WrapPanel>
+                    <Button x:Name="ExportPngButton" Content="Export _PNG..." Padding="10,3" Margin="0,0,6,4" Click="ExportPngButton_Click" />
+                    <Button x:Name="ExportAllButton" Content="Export _All..." Padding="10,3" Margin="0,0,6,4" Click="ExportAllButton_Click" />
+                    <Button x:Name="PrintButton" Content="P_rint..." Padding="10,3" Margin="0,0,6,4" Click="PrintButton_Click" />
+                    <Button Content="_Close" Padding="10,3" Margin="0,0,0,4" IsCancel="True" Click="CloseButton_Click" />
+                </WrapPanel>
+            </StackPanel>
+
+            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                <StackPanel Grid.IsSharedSizeScope="True">
+                    <GroupBox Header="Head">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" SharedSizeGroup="ParamLabel" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition /><RowDefinition /><RowDefinition /><RowDefinition />
+                                <RowDefinition /><RowDefinition /><RowDefinition />
+                            </Grid.RowDefinitions>
+                            <Label Grid.Row="0" Content="_Head type:" Target="{Binding ElementName=HeadTypeCombo}" />
+                            <ComboBox Grid.Row="0" Grid.Column="1" x:Name="HeadTypeCombo" SelectionChanged="HeadOrSize_Changed" />
+
+                            <Label Grid.Row="1" x:Name="HeadWidthLabel" Content="Across flats s (mm):" Target="{Binding ElementName=HeadWidthBox}" />
+                            <TextBox Grid.Row="1" Grid.Column="1" x:Name="HeadWidthBox" TextChanged="Input_Changed"
+                                     AutomationProperties.LabeledBy="{Binding ElementName=HeadWidthLabel}" />
+
+                            <Label Grid.Row="2" Content="Head height _k (mm):" Target="{Binding ElementName=HeadHeightBox}" />
+                            <TextBox Grid.Row="2" Grid.Column="1" x:Name="HeadHeightBox" TextChanged="Input_Changed"
+                                     AutomationProperties.Name="Head height k in millimetres" />
+
+                            <Label Grid.Row="3" x:Name="SocketSizeLabel" Content="Socket size s (mm):" Target="{Binding ElementName=SocketSizeBox}" />
+                            <TextBox Grid.Row="3" Grid.Column="1" x:Name="SocketSizeBox" TextChanged="Input_Changed"
+                                     AutomationProperties.Name="Hex socket size in millimetres" />
+
+                            <Label Grid.Row="4" x:Name="SocketDepthLabel" Content="Socket depth t (mm):" Target="{Binding ElementName=SocketDepthBox}" />
+                            <TextBox Grid.Row="4" Grid.Column="1" x:Name="SocketDepthBox" TextChanged="Input_Changed"
+                                     AutomationProperties.Name="Hex socket depth in millimetres" />
+
+                            <Label Grid.Row="5" x:Name="NeckLengthLabel" Content="Square neck f (mm):" Target="{Binding ElementName=NeckLengthBox}" />
+                            <TextBox Grid.Row="5" Grid.Column="1" x:Name="NeckLengthBox" TextChanged="Input_Changed"
+                                     AutomationProperties.Name="Square neck length in millimetres" />
+
+                            <Button Grid.Row="6" Grid.ColumnSpan="2" Content="Reset head to _standard" HorizontalAlignment="Left"
+                                    Padding="8,2" Margin="0,4,0,0" Click="ResetHeadButton_Click" />
+                        </Grid>
+                    </GroupBox>
+
+                    <GroupBox Header="Thread">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" SharedSizeGroup="ParamLabel" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition /><RowDefinition /><RowDefinition /><RowDefinition />
+                                <RowDefinition /><RowDefinition />
+                            </Grid.RowDefinitions>
+                            <Label Grid.Row="0" Content="_Size:" Target="{Binding ElementName=SizeCombo}" />
+                            <ComboBox Grid.Row="0" Grid.Column="1" x:Name="SizeCombo" SelectionChanged="HeadOrSize_Changed" />
+
+                            <Label Grid.Row="1" Content="_Pitch:" Target="{Binding ElementName=PitchCombo}" />
+                            <ComboBox Grid.Row="1" Grid.Column="1" x:Name="PitchCombo" SelectionChanged="Input_Changed" />
+
+                            <Label Grid.Row="2" Content="_Tolerance class:" Target="{Binding ElementName=ToleranceCombo}" />
+                            <ComboBox Grid.Row="2" Grid.Column="1" x:Name="ToleranceCombo" SelectionChanged="Input_Changed" />
+
+                            <Label Grid.Row="3" Content="Han_d:" Target="{Binding ElementName=HandCombo}" />
+                            <ComboBox Grid.Row="3" Grid.Column="1" x:Name="HandCombo" SelectionChanged="Input_Changed" />
+
+                            <Label Grid.Row="4" Content="Thread _length:" Target="{Binding ElementName=ThreadModeCombo}" />
+                            <ComboBox Grid.Row="4" Grid.Column="1" x:Name="ThreadModeCombo" SelectionChanged="Input_Changed" />
+
+                            <Label Grid.Row="5" Content="Custom b (mm):" Target="{Binding ElementName=ThreadLengthBox}" />
+                            <TextBox Grid.Row="5" Grid.Column="1" x:Name="ThreadLengthBox" TextChanged="Input_Changed"
+                                     AutomationProperties.Name="Custom thread length b in millimetres" />
+                        </Grid>
+                    </GroupBox>
+
+                    <GroupBox Header="Shank">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" SharedSizeGroup="ParamLabel" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <Label x:Name="LengthLabel" Content="Nominal length _L (mm):" Target="{Binding ElementName=LengthBox}" />
+                            <ComboBox Grid.Column="1" x:Name="LengthBox" IsEditable="True"
+                                      AutomationProperties.LabeledBy="{Binding ElementName=LengthLabel}" />
+                        </Grid>
+                    </GroupBox>
+
+                    <GroupBox Header="Material">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" SharedSizeGroup="ParamLabel" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition /><RowDefinition />
+                            </Grid.RowDefinitions>
+                            <Label Content="Property _class:" Target="{Binding ElementName=PropertyClassCombo}" />
+                            <ComboBox Grid.Column="1" x:Name="PropertyClassCombo" SelectionChanged="Input_Changed" />
+                            <Label Grid.Row="1" Content="_Finish:" Target="{Binding ElementName=FinishCombo}" />
+                            <ComboBox Grid.Row="1" Grid.Column="1" x:Name="FinishCombo" SelectionChanged="Input_Changed" />
+                        </Grid>
+                    </GroupBox>
+
+                    <GroupBox Header="Drawing">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" SharedSizeGroup="ParamLabel" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition /><RowDefinition /><RowDefinition />
+                            </Grid.RowDefinitions>
+                            <Label Content="Sc_ale (main views):" Target="{Binding ElementName=ScaleCombo}" />
+                            <ComboBox Grid.Column="1" x:Name="ScaleCombo" SelectionChanged="Input_Changed" />
+                            <Label Grid.Row="1" Content="Drawing _no.:" Target="{Binding ElementName=DrawingNumberBox}" />
+                            <TextBox Grid.Row="1" Grid.Column="1" x:Name="DrawingNumberBox" TextChanged="Input_Changed"
+                                     AutomationProperties.Name="Drawing number" />
+                            <Label Grid.Row="2" Content="Dra_wn by:" Target="{Binding ElementName=DrawnByBox}" />
+                            <TextBox Grid.Row="2" Grid.Column="1" x:Name="DrawnByBox" TextChanged="Input_Changed"
+                                     AutomationProperties.Name="Drawn by" />
+                        </Grid>
+                    </GroupBox>
+
+                    <TextBlock TextWrapping="Wrap" FontStyle="Italic" Foreground="#555555" FontSize="11"
+                               Text="Head defaults come from ISO 4014/4017, ISO 4762, ISO 7380-1, ISO 10642, DIN 478 and DIN 603 nominal values (sizes outside a standard use typical proportions). Verify against the current standard before release." />
+                </StackPanel>
+            </ScrollViewer>
+        </DockPanel>
+
+        <GridSplitter Grid.Column="1" Width="4" HorizontalAlignment="Stretch" Background="#DDDDDD" />
+
+        <!-- Drawings -->
+        <DockPanel Grid.Column="2">
+            <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="8,6">
+                <Label Content="_Zoom:" Target="{Binding ElementName=ZoomSlider}" />
+                <Slider x:Name="ZoomSlider" Width="180" Minimum="0.5" Maximum="4" Value="1.2"
+                        TickFrequency="0.25" IsSnapToTickEnabled="False" VerticalAlignment="Center"
+                        ValueChanged="ZoomSlider_ValueChanged" AutomationProperties.Name="Drawing zoom" />
+                <TextBlock x:Name="ZoomText" VerticalAlignment="Center" Margin="8,0,0,0" MinWidth="40" />
+                <Button Content="_Fit" Padding="8,1" Margin="8,0,0,0" Click="FitButton_Click" />
+            </StackPanel>
+            <TabControl x:Name="DrawingTabs" Margin="4,0,4,4" />
+        </DockPanel>
+    </Grid>
+</Window>

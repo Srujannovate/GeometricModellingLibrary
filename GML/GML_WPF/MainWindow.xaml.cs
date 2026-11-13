@@ -958,6 +958,13 @@ namespace GML_WPF
             MarkKdDirty();
         }
 
+        // ===== Bolt menu handlers =====
+        private void BoltDrawingsMenuItem_Click(object sender, RoutedEventArgs e)
+        {
+            var window = new Bolt.BoltDrawingWindow { Owner = this };
+            window.Show();
+        }
+
         // ===== Transform menu handlers =====
         private void ResetModelTransformMenuItem_Click(object sender, RoutedEventArgs e)
         {
