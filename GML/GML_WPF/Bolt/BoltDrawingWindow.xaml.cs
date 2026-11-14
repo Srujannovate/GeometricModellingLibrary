@@ -224,6 +224,7 @@ namespace GML_WPF.Bolt
             var errors = new List<string>();
             var spec = ReadSpec(errors);
             ExportPngButton.IsEnabled = ExportAllButton.IsEnabled = PrintButton.IsEnabled = spec != null;
+            ExportStepButton.IsEnabled = spec != null && !_stepExportRunning;
             if (spec == null)
             {
                 _spec = null;
@@ -245,6 +246,7 @@ namespace GML_WPF.Bolt
                 _spec = null;
                 ValidationText.Text = "Could not generate drawing: " + ex.Message;
                 ExportPngButton.IsEnabled = ExportAllButton.IsEnabled = PrintButton.IsEnabled = false;
+                ExportStepButton.IsEnabled = false;
             }
         }
 
@@ -330,6 +332,78 @@ namespace GML_WPF.Bolt
             catch (Exception ex)
             {
                 MessageBox.Show(this, ex.Message, "Export failed", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        /// <summary>Max time to wait for OCCT to build and write the STEP file.</summary>
+        private static readonly TimeSpan StepExportTimeout = TimeSpan.FromSeconds(60);
+        private bool _stepExportRunning;
+
+        private async void ExportStepButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (_spec == null || _stepExportRunning) return;
+            var spec = _spec;
+            var dlg = new SaveFileDialog
+            {
+                Title = "Export bolt 3D model as STEP",
+                Filter = "STEP file (*.step;*.stp)|*.step;*.stp",
+                DefaultExt = ".step",
+                FileName = $"{SafeFileName(spec.DrawingNumber)}.step"
+            };
+            if (dlg.ShowDialog(this) != true) return;
+            var path = dlg.FileName;
+
+            _stepExportRunning = true;
+            ExportStepButton.IsEnabled = false;
+            var oldContent = ExportStepButton.Content;
+            bool stuck = false;
+            ExportStepButton.Content = "Exporting STEP...";
+            Cursor = System.Windows.Input.Cursors.AppStarting;
+            try
+            {
+                // Run OCCT on a background thread so a slow or stuck native call
+                // cannot freeze the window. IsBackground lets the app exit even if
+                // the native call never returns.
+                var done = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
+                var worker = new Thread(() =>
+                {
+                    try { BoltSolidBuilder.ExportStep(spec, path); done.TrySetResult(null); }
+                    catch (Exception ex) { done.TrySetResult(ex); }
+                })
+                { IsBackground = true, Name = "Bolt STEP export" };
+                worker.Start();
+
+                var finished = await Task.WhenAny(done.Task, Task.Delay(StepExportTimeout));
+                if (finished != done.Task)
+                {
+                    stuck = true;
+                    ExportStepButton.ToolTip = "STEP export is unavailable until the application is restarted.";
+                    MessageBox.Show(this,
+                        $"The STEP export did not finish within {StepExportTimeout.TotalSeconds:0} seconds. " +
+                        "The OCCT file writer appears to be stuck, so no file was written.\n\n" +
+                        "Restart the application before trying again.",
+                        "STEP export timed out", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+
+                var error = await done.Task;
+                if (error != null)
+                {
+                    MessageBox.Show(this, error.Message, "STEP export failed", MessageBoxButton.OK, MessageBoxImage.Error);
+                    return;
+                }
+
+                MessageBox.Show(this, $"Saved the 3D bolt model to:\n{path}", "STEP export complete",
+                    MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            finally
+            {
+                Cursor = null;
+                ExportStepButton.Content = oldContent;
+                // A stuck native call keeps running; keep the button disabled so
+                // further clicks don't pile up more stuck threads.
+                _stepExportRunning = stuck;
+                ExportStepButton.IsEnabled = _spec != null && !stuck;
             }
         }
 

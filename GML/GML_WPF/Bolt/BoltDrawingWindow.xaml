@@ -38,6 +38,8 @@
                            AutomationProperties.LiveSetting="Assertive" />
                 <WrapPanel>
                     <Button x:Name="ExportPngButton" Content="Export _PNG..." Padding="10,3" Margin="0,0,6,4" Click="ExportPngButton_Click" />
+                    <Button x:Name="ExportStepButton" Content="Export _STEP..." Padding="10,3" Margin="0,0,6,4" Click="ExportStepButton_Click"
+                            ToolTip="Export the 3D bolt model (solid, mm) as a STEP AP214 file" />
                     <Button x:Name="ExportAllButton" Content="Export _All..." Padding="10,3" Margin="0,0,6,4" Click="ExportAllButton_Click" />
                     <Button x:Name="PrintButton" Content="P_rint..." Padding="10,3" Margin="0,0,6,4" Click="PrintButton_Click" />
                     <Button Content="_Close" Padding="10,3" Margin="0,0,0,4" IsCancel="True" Click="CloseButton_Click" />
