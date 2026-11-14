@@ -27,9 +27,21 @@ namespace GML_WPF.Bolt
             _ => kind.ToString()
         };
 
+        /// <summary>The drawing set, in sheet order.</summary>
+        public static IReadOnlyList<BoltDrawingKind> SheetOrder { get; } = Enum.GetValues<BoltDrawingKind>();
+
+        /// <summary>Builds every sheet of the drawing set (numbered 1..N).</summary>
+        public static List<DrawingSheet> BuildSet(BoltSpec spec)
+            => SheetOrder.Select(k => Build(spec, k)).ToList();
+
         public static DrawingSheet Build(BoltSpec spec, BoltDrawingKind kind)
         {
-            var sheet = new DrawingSheet();
+            var sheet = new DrawingSheet
+            {
+                SheetNumber = SheetOrder.ToList().IndexOf(kind) + 1,
+                SheetCount = SheetOrder.Count,
+                SheetName = DisplayName(kind)
+            };
             switch (kind)
             {
                 case BoltDrawingKind.Detail: BuildDetail(sheet, spec); break;
@@ -619,7 +631,7 @@ namespace GML_WPF.Bolt
                 { "FINISH", b.Finish },
                 { "DRAWING NO.", b.DrawingNumber },
                 { "SCALE", scale },
-                { "SHEET", "A4  1/1" },
+                { "SHEET", $"A4  {s.SheetNumber}/{s.SheetCount}" },
                 { "PROJECTION", "1st angle (ISO E)" },
                 { "DRAWN BY", string.IsNullOrWhiteSpace(b.DrawnBy) ? "-" : b.DrawnBy },
                 { "DATE", DateTime.Today.ToString("yyyy-MM-dd") },

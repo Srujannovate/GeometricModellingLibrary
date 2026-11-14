@@ -27,6 +27,20 @@ namespace GML_WPF.Bolt
         public double Width { get; }
         public double Height { get; }
 
+        /// <summary>Position of this sheet within its drawing set (shown in the title block).</summary>
+        public int SheetNumber { get; set; } = 1;
+        public int SheetCount { get; set; } = 1;
+        /// <summary>Sheet name used for PDF bookmarks / page labels.</summary>
+        public string SheetName { get; set; } = "";
+
+        private readonly List<SheetPrimitive> _primitives = new();
+
+        /// <summary>Vector record of everything drawn, in sheet millimetres (y down).</summary>
+        public IReadOnlyList<SheetPrimitive> Primitives => _primitives;
+
+        public static double FontSizeFor(double capHeight) => capHeight / 0.72;
+        public static FontFamily FontFamily => Font;
+
         public DrawingSheet(double width = A4Width, double height = A4Height)
         {
             Width = width;
@@ -89,6 +103,7 @@ namespace GML_WPF.Bolt
             var l = new Line { X1 = a.X, Y1 = a.Y, X2 = b.X, Y2 = b.Y };
             ApplyStyle(l, kind);
             Canvas.Children.Add(l);
+            _primitives.Add(new PolyPrimitive(new[] { a, b }, false, kind, false));
         }
 
         public void Line(double x1, double y1, double x2, double y2, LineKind kind = LineKind.Visible)
@@ -96,11 +111,13 @@ namespace GML_WPF.Bolt
 
         public void Poly(IEnumerable<Point> points, LineKind kind = LineKind.Visible, bool closed = false, bool hatch = false)
         {
-            var pts = new PointCollection(points);
+            var array = points.ToArray();
+            var pts = new PointCollection(array);
             Shape s = closed ? new Polygon { Points = pts } : new Polyline { Points = pts };
             ApplyStyle(s, kind);
             if (hatch) s.Fill = HatchBrush;
             Canvas.Children.Add(s);
+            _primitives.Add(new PolyPrimitive(array, closed, kind, hatch));
         }
 
         public void Rect(double x, double y, double w, double h, LineKind kind = LineKind.Visible)
@@ -113,6 +130,8 @@ namespace GML_WPF.Bolt
             Canvas.SetLeft(e, c.X - r);
             Canvas.SetTop(e, c.Y - r);
             Canvas.Children.Add(e);
+            // WPF strokes an Ellipse inside its bounds; record the stroke centre-line radius.
+            _primitives.Add(new CirclePrimitive(c, Math.Max(0, r - e.StrokeThickness / 2), kind));
         }
 
         /// <summary>Arc with angles in degrees, counter-clockwise as seen on the sheet (0° = +x).</summary>
@@ -131,6 +150,7 @@ namespace GML_WPF.Bolt
             var path = new Path { Data = new PathGeometry(new[] { fig }) };
             ApplyStyle(path, kind);
             Canvas.Children.Add(path);
+            _primitives.Add(new ArcPrimitive(c, r, startDeg, sweepDeg, kind));
         }
 
         public static IEnumerable<Point> RegularPolygon(Point c, double circumRadius, int sides, double startDeg)
@@ -181,6 +201,8 @@ namespace GML_WPF.Bolt
                 tb.RenderTransform = new RotateTransform(angleDeg, x - left, size.Height / 2);
             }
             Canvas.Children.Add(tb);
+            _primitives.Add(new TextPrimitive(text, left, y - size.Height / 2, new Point(x, y),
+                tb.FontSize, bold, angleDeg));
             return size;
         }
 
@@ -191,14 +213,16 @@ namespace GML_WPF.Bolt
             dir.Normalize();
             var n = new Vector(-dir.Y, dir.X);
             var bas = tip - dir * 2.5;
+            var points = new[] { tip, bas + n * 0.45, bas - n * 0.45 };
             var poly = new Polygon
             {
-                Points = new PointCollection { tip, bas + n * 0.45, bas - n * 0.45 },
+                Points = new PointCollection(points),
                 Fill = Ink,
                 Stroke = Ink,
                 StrokeThickness = 0.1
             };
             Canvas.Children.Add(poly);
+            _primitives.Add(new ArrowPrimitive(points));
         }
 
         /// <summary>
@@ -293,6 +317,17 @@ namespace GML_WPF.Bolt
                  textRight ? TextAlign.Left : TextAlign.Right);
         }
     }
+
+    // ---- Vector record of a sheet (sheet mm, origin top-left, y down) ----
+    public abstract record SheetPrimitive;
+    public sealed record PolyPrimitive(Point[] Points, bool Closed, LineKind Kind, bool Hatch) : SheetPrimitive;
+    public sealed record CirclePrimitive(Point Center, double Radius, LineKind Kind) : SheetPrimitive;
+    /// <summary>Angles in degrees, counter-clockwise as seen on the sheet.</summary>
+    public sealed record ArcPrimitive(Point Center, double Radius, double StartDeg, double SweepDeg, LineKind Kind) : SheetPrimitive;
+    public sealed record ArrowPrimitive(Point[] Points) : SheetPrimitive;
+    /// <summary>Text laid out like the WPF TextBlock: box top-left, rotated about <paramref name="Anchor"/>.</summary>
+    public sealed record TextPrimitive(string Text, double Left, double Top, Point Anchor,
+                                       double FontSize, bool Bold, double AngleDeg) : SheetPrimitive;
 
     /// <summary>Maps model coordinates (x along the bolt axis, y up, mm) onto the sheet.</summary>
     public readonly record struct ViewMap(double OriginX, double OriginY, double Scale)

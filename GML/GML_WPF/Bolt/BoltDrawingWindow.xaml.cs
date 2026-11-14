@@ -225,6 +225,7 @@ namespace GML_WPF.Bolt
             var spec = ReadSpec(errors);
             ExportPngButton.IsEnabled = ExportAllButton.IsEnabled = PrintButton.IsEnabled = spec != null;
             ExportStepButton.IsEnabled = spec != null && !_stepExportRunning;
+            ExportSheetStepButton.IsEnabled = spec != null;
             if (spec == null)
             {
                 _spec = null;
@@ -246,7 +247,7 @@ namespace GML_WPF.Bolt
                 _spec = null;
                 ValidationText.Text = "Could not generate drawing: " + ex.Message;
                 ExportPngButton.IsEnabled = ExportAllButton.IsEnabled = PrintButton.IsEnabled = false;
-                ExportStepButton.IsEnabled = false;
+                ExportStepButton.IsEnabled = ExportSheetStepButton.IsEnabled = false;
             }
         }
 
@@ -332,6 +333,32 @@ namespace GML_WPF.Bolt
             catch (Exception ex)
             {
                 MessageBox.Show(this, ex.Message, "Export failed", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        private void ExportSheetStepButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (_spec == null) return;
+            var dlg = new SaveFileDialog
+            {
+                Title = "Export drawing sheets as 2D STEP",
+                Filter = "STEP file (*.step;*.stp)|*.step;*.stp",
+                DefaultExt = ".step",
+                FileName = $"{SafeFileName(_spec.DrawingNumber)}_sheets.step"
+            };
+            if (dlg.ShowDialog(this) != true) return;
+            try
+            {
+                var sheets = BoltDrawingGenerator.BuildSet(_spec);
+                SheetStepWriter.Write(sheets, dlg.FileName, _spec.DrawingNumber, _spec.DrawnBy);
+                MessageBox.Show(this,
+                    $"Saved {sheets.Count} drawing sheets as 2D STEP to:\n{dlg.FileName}\n\n" +
+                    "Each sheet is a separate part, placed side by side in the XY plane.",
+                    "2D STEP export complete", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, ex.Message, "2D STEP export failed", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
 
