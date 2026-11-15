@@ -290,57 +290,71 @@ namespace GML_WPF
                 Shape = importedShape
             });
 
-            // Create a Triangulation and add to viewport
-            var tri = new Triangulation();
-            tri.Positions = allPositions.ToArray();
-            tri.Indices = allIndices.ToArray();
-            ComputeLocalAabb(tri.Positions, out tri.LocalMin, out tri.LocalMax);
-            BuildGrid(tri);
-
-            var positions = new HT.Vector3Collection(tri.Positions);
-            var indices = new HT.IntCollection(tri.Indices);
-
-            var meshGeom = new HxSharpDX.MeshGeometry3D
+            // Wireframe-only files (e.g. exported 2D drawing sheets) have edges but no faces.
+            bool hasFaces = allIndices.Count > 0;
+            if (hasFaces)
             {
-                Positions = positions,
-                Indices = indices
-            };
+                // Create a Triangulation and add to viewport
+                var tri = new Triangulation();
+                tri.Positions = allPositions.ToArray();
+                tri.Indices = allIndices.ToArray();
+                ComputeLocalAabb(tri.Positions, out tri.LocalMin, out tri.LocalMax);
+                BuildGrid(tri);
 
-            var model = new Hx.MeshGeometryModel3D
+                var positions = new HT.Vector3Collection(tri.Positions);
+                var indices = new HT.IntCollection(tri.Indices);
+
+                var meshGeom = new HxSharpDX.MeshGeometry3D
+                {
+                    Positions = positions,
+                    Indices = indices
+                };
+
+                var model = new Hx.MeshGeometryModel3D
+                {
+                    Geometry = meshGeom,
+                    Material = Hx.PhongMaterials.Gray,
+                    RenderWireframe = ShowTriangulationMenuItem.IsChecked,
+                    WireframeColor = Colors.Lime,
+                    DepthBias = 1
+                };
+                model.Transform = tri.Transform;
+                tri.Model = model;
+
+                _triangulations.Add(tri);
+
+                View3D.Items.Add(model);
+            }
+
+            if (linePositions.Count > 0)
             {
-                Geometry = meshGeom,
-                Material = Hx.PhongMaterials.Gray,
-                RenderWireframe = ShowTriangulationMenuItem.IsChecked,
-                WireframeColor = Colors.Lime,
-                DepthBias = 1
-            };
-            model.Transform = tri.Transform;
-            tri.Model = model;
+                var lineGeom = new HxSharpDX.LineGeometry3D
+                {
+                    Positions = linePositions,
+                    Indices = lineIndices
+                };
 
-            _triangulations.Add(tri);
-
-            View3D.Items.Add(model);
-
-            var lineGeom = new HxSharpDX.LineGeometry3D
-            {
-                Positions = linePositions,
-                Indices = lineIndices
-            };
-
-            var lineModel = new Hx.LineGeometryModel3D
-            {
-                Geometry = lineGeom,
-                Color = Colors.White,
-                Thickness = 1.5,
-                DepthBias = -100
-            };
-            View3D.Items.Add(lineModel);
-            _edgeModels.Add(lineModel);
+                var lineModel = new Hx.LineGeometryModel3D
+                {
+                    Geometry = lineGeom,
+                    // White edges sit on gray faces; with no faces they would vanish
+                    // against the white background, so draw wireframes in black.
+                    Color = hasFaces ? Colors.White : Colors.Black,
+                    Thickness = hasFaces ? 1.5 : 1.0,
+                    DepthBias = -100
+                };
+                View3D.Items.Add(lineModel);
+                _edgeModels.Add(lineModel);
+            }
 
             RenderPmi(_pmi);
             RebuildSavedViewsMenu();
 
             MarkKdDirty();
+
+            // Drawing sheets are far larger than the default camera view; fit them.
+            if (!hasFaces)
+                View3D.ZoomExtents();
         }
 
         // ===== PMI rendering / saved-view handling =====

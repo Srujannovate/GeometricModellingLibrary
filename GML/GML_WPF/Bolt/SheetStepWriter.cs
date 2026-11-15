@@ -94,21 +94,27 @@ namespace GML_WPF.Bolt
                 foreach (var p in sheet.Primitives)
                     geo.Emit(p, curves);
 
-                var items = new List<int>();
-                int origin = w.Add($"AXIS2_PLACEMENT_3D('',{R(geo.Point(new Point(0, sheet.Height)))},{R(dirZ)},{R(dirX)})");
-                items.Add(origin);
-                int curveCount = 0;
+                // The placement must be the global origin: the sheet offset is already in
+                // the coordinates, and readers apply this placement on top of them.
+                int origin = w.Add($"AXIS2_PLACEMENT_3D('',{R(w.Add("CARTESIAN_POINT('',(0.,0.,0.))"))},{R(dirZ)},{R(dirX)})");
+                // One edge set per sheet: OCCT's XDE reader (FreeCAD, and the GML PMI
+                // loader) drops the whole part when a wireframe model has several sets.
+                // Line types are kept as per-edge styles instead.
+                var allEdges = new List<int>();
                 foreach (var (layer, _, _) in LayerStyles)
                 {
-                    var list = curves[layer];
-                    if (list.Count == 0) continue;
-                    curveCount += list.Count;
-                    int set = w.Add($"GEOMETRIC_CURVE_SET({S(layer.ToString().ToLowerInvariant())},({string.Join(",", list.Select(R))}))");
-                    items.Add(set);
-                    styledItems.Add(w.Add($"STYLED_ITEM('',({R(styleByLayer[layer])}),{R(set)})"));
+                    foreach (var edge in curves[layer])
+                    {
+                        allEdges.Add(edge);
+                        styledItems.Add(w.Add($"STYLED_ITEM({S(layer.ToString().ToLowerInvariant())},({R(styleByLayer[layer])}),{R(edge)})"));
+                    }
                 }
+                int curveCount = allEdges.Count;
+                if (curveCount == 0) continue;
 
-                int rep = w.Add($"GEOMETRICALLY_BOUNDED_WIREFRAME_SHAPE_REPRESENTATION({S(name)},({string.Join(",", items.Select(R))}),{R(ctx)})");
+                int edgeSet = w.Add($"CONNECTED_EDGE_SET({S(name)},({string.Join(",", allEdges.Select(R))}))");
+                int model = w.Add($"EDGE_BASED_WIREFRAME_MODEL({S(name)},({R(edgeSet)}))");
+                int rep = w.Add($"EDGE_BASED_WIREFRAME_SHAPE_REPRESENTATION({S(name)},({R(origin)},{R(model)}),{R(ctx)})");
                 w.Add($"SHAPE_DEFINITION_REPRESENTATION({R(pds)},{R(rep)})");
                 sheetSummaries.Add($"{name}: {curveCount} curves");
             }
@@ -159,25 +165,57 @@ namespace GML_WPF.Bolt
             public int Point(Point p)
                 => _w.Add($"CARTESIAN_POINT('',({N(p.X + _ox)},{N(_height - p.Y)},0.))");
 
+            /// <summary>Points closer than this are merged (readers reject zero-length segments).</summary>
+            private const double MinSegment = 1e-3;
+
             private int Polyline(IReadOnlyList<Point> pts, bool closed)
             {
-                var ids = new List<int>(pts.Count + 1);
-                Point? last = null;
+                // Drop consecutive duplicates, judged on the coordinates as written to the file.
+                var kept = new List<Point>(pts.Count + 1);
                 foreach (var p in pts)
                 {
-                    if (last is Point l && (p - l).Length < 1e-6) continue; // drop duplicate vertices
-                    ids.Add(Point(p));
-                    last = p;
+                    var q = new Point(Math.Round(p.X, 6), Math.Round(p.Y, 6));
+                    if (kept.Count > 0 && (q - kept[^1]).Length < MinSegment) continue;
+                    kept.Add(q);
                 }
-                if (closed && ids.Count > 2) ids.Add(ids[0]);
-                if (ids.Count < 2) return -1;
-                return _w.Add($"POLYLINE('',({string.Join(",", ids.Select(R))}))");
+
+                if (closed)
+                {
+                    // A closing point equal to the start would add a zero-length segment.
+                    while (kept.Count > 1 && (kept[^1] - kept[0]).Length < MinSegment)
+                        kept.RemoveAt(kept.Count - 1);
+                    if (kept.Count < 3) closed = false;
+                }
+                if (kept.Count < 2) return -1;
+
+                var ids = kept.Select(Point).ToList();
+                if (closed) ids.Add(ids[0]);
+                int polyline = _w.Add($"POLYLINE('',({string.Join(",", ids.Select(R))}))");
+                int v1 = Vertex(ids[0]);
+                int v2 = closed ? v1 : Vertex(ids[^1]);
+                return Edge(v1, v2, polyline);
             }
+
+            private int Vertex(int pointId) => _w.Add($"VERTEX_POINT('',{R(pointId)})");
+
+            /// <summary>
+            /// Topological edge. XDE-based importers (FreeCAD, many CAD systems) ignore
+            /// loose curves, but accept edges in an edge-based wireframe model.
+            /// </summary>
+            private int Edge(int v1, int v2, int curve)
+                => _w.Add($"EDGE_CURVE('',{R(v1)},{R(v2)},{R(curve)},.T.)");
 
             private int Circle(Point c, double r)
             {
                 int axis = _w.Add($"AXIS2_PLACEMENT_3D('',{R(Point(c))},{R(_dirZ)},{R(_dirX)})");
                 return _w.Add($"CIRCLE('',{R(axis)},{N(r)})");
+            }
+
+            private int FullCircleEdge(Point c, double r)
+            {
+                int circle = Circle(c, r);
+                int v = Vertex(Point(new Point(c.X + r, c.Y)));
+                return Edge(v, v, circle);
             }
 
             public void Emit(SheetPrimitive p, Dictionary<Layer, List<int>> curves)
@@ -196,7 +234,7 @@ namespace GML_WPF.Bolt
                         Add(curves, Layer.Thin, Polyline(arrow.Points, true));
                         break;
                     case CirclePrimitive c when c.Radius > 1e-6:
-                        Add(curves, ToLayer(c.Kind), Circle(c.Center, c.Radius));
+                        Add(curves, ToLayer(c.Kind), FullCircleEdge(c.Center, c.Radius));
                         break;
                     case ArcPrimitive a when a.Radius > 1e-6 && Math.Abs(a.SweepDeg) > 1e-9:
                     {
@@ -206,11 +244,8 @@ namespace GML_WPF.Bolt
                         int circle = Circle(a.Center, a.Radius);
                         int p1 = Point(ArcPoint(a.Center, a.Radius, s));
                         int p2 = Point(ArcPoint(a.Center, a.Radius, e));
-                        double t1 = Normalize(s * Math.PI / 180), t2 = Normalize(e * Math.PI / 180);
-                        if (t2 <= t1) t2 += 2 * Math.PI;
-                        int trimmed = _w.Add($"TRIMMED_CURVE('',{R(circle)},({R(p1)},PARAMETER_VALUE({N(t1)}))," +
-                                             $"({R(p2)},PARAMETER_VALUE({N(t2)})),.T.,.CARTESIAN.)");
-                        Add(curves, ToLayer(a.Kind), trimmed);
+                        // The circle runs CCW about +Z, so the edge from p1 to p2 follows it (.T.).
+                        Add(curves, ToLayer(a.Kind), Edge(Vertex(p1), Vertex(p2), circle));
                         break;
                     }
                     case TextPrimitive t when !string.IsNullOrWhiteSpace(t.Text):
