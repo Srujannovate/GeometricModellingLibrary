@@ -290,7 +290,24 @@ namespace GML_WPF
                 Shape = importedShape
             });
 
-            // Wireframe-only files (e.g. exported 2D drawing sheets) have edges but no faces.
+            bool hasFaces = ShowImportedGeometry(allIndices, allPositions, lineIndices, linePositions);
+
+            RenderPmi(_pmi);
+            RebuildSavedViewsMenu();
+
+            MarkKdDirty();
+
+            FitCameraToImport(allPositions, linePositions, topView: !hasFaces);
+        }
+
+        /// <summary>
+        /// Adds imported faces and edges to the viewport. Wireframe-only files
+        /// (e.g. exported 2D drawing sheets) have edges but no faces.
+        /// </summary>
+        /// <returns>True when the import contained faces.</returns>
+        private bool ShowImportedGeometry(List<int> allIndices, List<Vector3> allPositions,
+            HT.IntCollection lineIndices, HT.Vector3Collection linePositions)
+        {
             bool hasFaces = allIndices.Count > 0;
             if (hasFaces)
             {
@@ -337,24 +354,78 @@ namespace GML_WPF
                 var lineModel = new Hx.LineGeometryModel3D
                 {
                     Geometry = lineGeom,
-                    // White edges sit on gray faces; with no faces they would vanish
-                    // against the white background, so draw wireframes in black.
-                    Color = hasFaces ? Colors.White : Colors.Black,
+                    // Wireframe-only drawings must contrast with the viewport's DirectX
+                    // background (BackgroundColor, black by default; the WPF Background
+                    // property does not affect it).
+                    Color = hasFaces ? Colors.White : ContrastColor(View3D.BackgroundColor),
                     Thickness = hasFaces ? 1.5 : 1.0,
                     DepthBias = -100
                 };
                 View3D.Items.Add(lineModel);
                 _edgeModels.Add(lineModel);
             }
+            return hasFaces;
+        }
 
-            RenderPmi(_pmi);
-            RebuildSavedViewsMenu();
+        private static Color ContrastColor(Color background)
+        {
+            double luminance = 0.2126 * background.R + 0.7152 * background.G + 0.0722 * background.B;
+            return luminance > 128 ? Colors.Black : Colors.White;
+        }
 
-            MarkKdDirty();
+        /// <summary>
+        /// Points the camera at the imported geometry. The bounds come from the imported
+        /// data itself (the viewport's scene bounds are not updated until the next render),
+        /// and the clipping planes are sized to the model: with the default far plane of
+        /// 1000, anything that needs the camera more than 1000 units away is clipped and
+        /// the view stays empty (e.g. a set of A4 drawing sheets, ~1.2 m wide).
+        /// </summary>
+        private void FitCameraToImport(IReadOnlyList<Vector3> meshPositions, IReadOnlyList<Vector3> linePositions, bool topView)
+        {
+            var min = new Vector3(float.MaxValue);
+            var max = new Vector3(float.MinValue);
+            foreach (var list in new[] { meshPositions, linePositions })
+                foreach (var p in list)
+                {
+                    min = Vector3.Min(min, p);
+                    max = Vector3.Max(max, p);
+                }
+            if (min.X > max.X) return; // nothing imported
 
-            // Drawing sheets are far larger than the default camera view; fit them.
-            if (!hasFaces)
-                View3D.ZoomExtents();
+            var size = max - min;
+            double radius = Math.Max(size.Length() / 2, 1e-3);
+            var center = (min + max) / 2;
+
+            if (topView)
+            {
+                // Drawings lie in the XY plane: look straight down onto them.
+                _camera.LookDirection = new System.Windows.Media.Media3D.Vector3D(0, 0, -1);
+                _camera.UpDirection = new System.Windows.Media.Media3D.Vector3D(0, 1, 0);
+            }
+
+            // Fitting distance for this field of view (vertical in the SharpDX camera).
+            double tanHalf = Math.Tan(_camera.FieldOfView * Math.PI / 360);
+            double fit;
+            if (topView)
+            {
+                // Flat drawing: fit its width and height to the viewport, 5% margin.
+                double aspect = View3D.ActualHeight > 0 ? View3D.ActualWidth / View3D.ActualHeight : 1.6;
+                fit = 1.05 * Math.Max(size.Y / 2, size.X / 2 / aspect) / tanHalf;
+            }
+            else
+            {
+                fit = radius / Math.Sin(_camera.FieldOfView * Math.PI / 360);
+            }
+            _camera.FarPlaneDistance = Math.Max(1000, (fit + radius) * 10);
+            _camera.NearPlaneDistance = Math.Clamp(radius * 1e-3, 1e-3, 1);
+
+            View3D.ZoomExtents(new Rect3D(min.X, min.Y, min.Z, size.X, size.Y, size.Z), 0);
+
+            // ZoomExtents keeps the current direction; make sure we end up centred on the model.
+            var look = _camera.LookDirection;
+            look.Normalize();
+            _camera.Position = new Point3D(center.X - look.X * fit, center.Y - look.Y * fit, center.Z - look.Z * fit);
+            _camera.LookDirection = look * fit;
         }
 
         // ===== PMI rendering / saved-view handling =====
