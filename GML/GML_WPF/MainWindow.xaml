@@ -132,7 +132,7 @@
         <!-- Bottom Status Bar -->
         <StatusBar Grid.Row="4">
             <StatusBarItem>
-                <TextBlock Text="Ready" />
+                <TextBlock x:Name="MainStatusText" Text="Ready" />
             </StatusBarItem>
             <Separator />
             <StatusBarItem>
