@@ -110,6 +110,9 @@ namespace GML_WPF
         private IntPtr _kdTree = IntPtr.Zero;
         private int _kdPointCount = 0;
         private bool _kdDirty = true;
+        private int _loadingIndicatorDepth;
+        private System.Windows.Input.Cursor? _cursorBeforeLoading;
+        private string _statusBeforeLoading = string.Empty;
 
         public MainWindow()
         {
@@ -189,7 +192,7 @@ namespace GML_WPF
             Close();
         }
 
-        private void OpenMenuItem_Click(object sender, RoutedEventArgs e)
+        private async void OpenMenuItem_Click(object sender, RoutedEventArgs e)
         {
             var dlg = new OpenFileDialog
             {
@@ -198,19 +201,52 @@ namespace GML_WPF
             };
             if (dlg.ShowDialog(this) == true)
             {
+                var ext = Path.GetExtension(dlg.FileName).ToLowerInvariant();
+                if (ext == ".gml" || ext == ".txt")
+                {
+                    HandleImportCommand(new[] { "import", dlg.FileName });
+                    return;
+                }
+
                 try
                 {
-                    var ext = Path.GetExtension(dlg.FileName).ToLowerInvariant();
-                    if (ext == ".step" || ext == ".stp")
-                        LoadStepToViewport(dlg.FileName);
-                    else if (ext == ".gml" || ext == ".txt")
-                        HandleImportCommand(new[] { "import", dlg.FileName });
-                    else
-                        LoadObjToViewport(dlg.FileName);
+                    await RunWithLoadingIndicator(() =>
+                    {
+                        if (ext == ".step" || ext == ".stp")
+                            LoadStepToViewport(dlg.FileName);
+                        else
+                            LoadObjToViewport(dlg.FileName);
+                    });
                 }
                 catch (Exception ex)
                 {
                     MessageBox.Show(this, ex.Message, "Failed to load model", MessageBoxButton.OK, MessageBoxImage.Error);
+                }
+            }
+        }
+
+        private async Task RunWithLoadingIndicator(Action load)
+        {
+            if (_loadingIndicatorDepth++ == 0)
+            {
+                _cursorBeforeLoading = Cursor;
+                _statusBeforeLoading = MainStatusText.Text;
+                Cursor = Cursors.Wait;
+                MainStatusText.Text = "Loading...";
+            }
+
+            try
+            {
+                await System.Windows.Threading.Dispatcher.Yield(System.Windows.Threading.DispatcherPriority.Background);
+                load();
+            }
+            finally
+            {
+                if (--_loadingIndicatorDepth == 0)
+                {
+                    Cursor = _cursorBeforeLoading;
+                    MainStatusText.Text = _statusBeforeLoading;
+                    _cursorBeforeLoading = null;
                 }
             }
         }
@@ -2466,7 +2502,7 @@ namespace GML_WPF
             }
         }
 
-        private void HandleOpenCommand(string[] parts)
+        private async void HandleOpenCommand(string[] parts)
         {
             string? filePath = null;
             if (parts.Length >= 2)
@@ -2497,24 +2533,29 @@ namespace GML_WPF
                 return;
             }
 
+            var ext = Path.GetExtension(filePath).ToLowerInvariant();
+            if (ext == ".gml" || ext == ".txt")
+            {
+                // Schema file — redirect to import
+                HandleImportCommand(new[] { "import", filePath });
+                return;
+            }
+
             try
             {
-                var ext = Path.GetExtension(filePath).ToLowerInvariant();
-                if (ext == ".gml" || ext == ".txt")
-                {
-                    // Schema file — redirect to import
-                    HandleImportCommand(new[] { "import", filePath });
-                    return;
-                }
-                if (ext == ".step" || ext == ".stp")
-                    LoadStepToViewport(filePath);
-                else if (ext == ".obj")
-                    LoadObjToViewport(filePath);
-                else
+                if (ext != ".step" && ext != ".stp" && ext != ".obj")
                 {
                     AppendOutput($"  Unsupported file format '{ext}'. Supported: .obj, .step, .stp, .gml, .txt");
                     return;
                 }
+
+                await RunWithLoadingIndicator(() =>
+                {
+                    if (ext == ".step" || ext == ".stp")
+                        LoadStepToViewport(filePath);
+                    else
+                        LoadObjToViewport(filePath);
+                });
                 AppendOutput($"  Opened '{Path.GetFileName(filePath)}'");
             }
             catch (Exception ex)
@@ -2523,7 +2564,7 @@ namespace GML_WPF
             }
         }
 
-        private void HandleImportCommand(string[] parts)
+        private async void HandleImportCommand(string[] parts)
         {
             string? filePath = null;
             if (parts.Length >= 2)
@@ -2554,23 +2595,26 @@ namespace GML_WPF
 
             try
             {
-                var lines = File.ReadAllLines(filePath);
-                int executed = 0, skipped = 0;
-                AppendOutput($"  Importing '{Path.GetFileName(filePath)}' ({lines.Length} lines)...");
-                foreach (var raw in lines)
+                await RunWithLoadingIndicator(() =>
                 {
-                    var line = raw.Trim();
-                    // Skip empty lines and comments (lines starting with # or //)
-                    if (string.IsNullOrWhiteSpace(line) || line.StartsWith('#') || line.StartsWith("//"))
+                    var lines = File.ReadAllLines(filePath);
+                    int executed = 0, skipped = 0;
+                    AppendOutput($"  Importing '{Path.GetFileName(filePath)}' ({lines.Length} lines)...");
+                    foreach (var raw in lines)
                     {
-                        skipped++;
-                        continue;
+                        var line = raw.Trim();
+                        // Skip empty lines and comments (lines starting with # or //)
+                        if (string.IsNullOrWhiteSpace(line) || line.StartsWith('#') || line.StartsWith("//"))
+                        {
+                            skipped++;
+                            continue;
+                        }
+                        AppendOutput($"> {line}");
+                        ProcessCommand(line);
+                        executed++;
                     }
-                    AppendOutput($"> {line}");
-                    ProcessCommand(line);
-                    executed++;
-                }
-                AppendOutput($"  Import complete: {executed} commands executed, {skipped} skipped.");
+                    AppendOutput($"  Import complete: {executed} commands executed, {skipped} skipped.");
+                });
             }
             catch (Exception ex)
             {
