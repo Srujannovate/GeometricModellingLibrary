@@ -1,11 +1,18 @@
 using System.Numerics;
 using GMLModel.Pmi;
+using Occt;
 using HT = HelixToolkit;
 
 namespace GMLModel
 {
     public class STEPModelLoader
     {
+        public void GenerateTessellations(TopoDS_Shape shape, out List<int> allIndices, out List<Vector3> allPositions)
+        {
+            StepPmiLoader loader = new StepPmiLoader();
+            loader.GenerateTessellations(shape, out allIndices, out allPositions);
+        }
+
         /// <summary>
         /// Loads geometry plus PMI (dimensions/tolerances/notes/views) using the
         /// OCCT XDE/CAF pipeline.
@@ -97,43 +104,14 @@ namespace GMLModel
                 explorer.Next();
             }
 
-            if (allPositions.Count == 0)
-                throw new InvalidOperationException($"No triangulated faces found in: {Path.GetFileName(path)}");
-
-            
-
             // ===== Extract BRep edges and display as lines =====
+            // Includes free (wireframe) edges, so 2D drawing sheets load too.
             linePositions = new HT.Vector3Collection();
             lineIndices = new HT.IntCollection();
+            StepPmiLoader.ExtractEdges(shape, linePositions, lineIndices);
 
-            var edgeExplorer = new Occt.TopExp_Explorer(shape, Occt.TopAbs_ShapeEnum.TopAbs_EDGE);
-            while (edgeExplorer.More)
-            {
-                var edge = (Occt.TopoDS_Edge)edgeExplorer.Current;
-                var edgeLoc = new Occt.TopLoc_Location();
-                var polygon = Occt.BRep_Tool.Polygon3D(edge, out edgeLoc);
-                if (polygon != null)
-                {
-                    var edgeTrsf = edgeLoc.IsIdentity ? null : edgeLoc.Transformation;
-                    int nbNodes = polygon.NbNodes;
-                    int baseIdx = linePositions.Count;
-                    var nodes = polygon.Nodes;
-                    for (int i = 1; i <= nbNodes; i++)
-                    {
-                        var pt = nodes[i];
-                        if (edgeTrsf != null)
-                            pt.Transform(edgeTrsf);
-                        linePositions.Add(new Vector3((float)pt.X, (float)pt.Y, (float)pt.Z));
-                    }
-                    // Add line segment indices (pairs of consecutive vertices)
-                    for (int i = 0; i < nbNodes - 1; i++)
-                    {
-                        lineIndices.Add(baseIdx + i);
-                        lineIndices.Add(baseIdx + i + 1);
-                    }
-                }
-                edgeExplorer.Next();
-            }
+            if (allPositions.Count == 0 && linePositions.Count == 0)
+                throw new InvalidOperationException($"No faces or curves found in: {Path.GetFileName(path)}");
         }
     }
 }

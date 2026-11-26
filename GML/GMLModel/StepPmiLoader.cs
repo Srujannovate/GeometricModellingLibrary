@@ -44,6 +44,8 @@ namespace GMLModel
             _ = new Occt.BRepMesh_IncrementalMesh(shape, 0.1, false, 0.5, true);
             ExtractTriangles(shape, allPositions, allIndices);
             ExtractEdges(shape, linePositions, lineIndices);
+            if (allPositions.Count == 0 && linePositions.Count == 0)
+                throw new InvalidOperationException($"No faces or curves found in: {Path.GetFileName(path)}");
 
             // --- Best-effort PMI extraction via reflection ---------------------------
             try { pmi.LengthUnitMm = DetectLengthUnitMm(); } catch { }
@@ -51,6 +53,23 @@ namespace GMLModel
             catch (Exception ex) { Debug.WriteLine($"[PMI] extraction skipped: {ex.Message}"); }
 
             return pmi;
+        }
+
+        public void GenerateTessellations(Occt.TopoDS_Shape shape, out List<int> allIndices, out List<Vector3> allPositions)
+        {
+            try
+            {
+                _ = new Occt.BRepMesh_IncrementalMesh(shape, 0.1, false, 0.5, true);
+            }
+            catch (Exception ex)
+            {
+
+                throw ex;
+            }
+            
+            allPositions = new List<Vector3>();
+            allIndices = new List<int>();
+            ExtractTriangles(shape, allPositions, allIndices);
         }
 
         // =========================================================================
@@ -98,7 +117,7 @@ namespace GMLModel
             }
         }
 
-        private static void ExtractEdges(Occt.TopoDS_Shape shape, HT.Vector3Collection positions, HT.IntCollection indices)
+        internal static void ExtractEdges(Occt.TopoDS_Shape shape, HT.Vector3Collection positions, HT.IntCollection indices)
         {
             var edgeExplorer = new Occt.TopExp_Explorer(shape, Occt.TopAbs_ShapeEnum.TopAbs_EDGE);
             while (edgeExplorer.More)
@@ -106,7 +125,13 @@ namespace GMLModel
                 var edge = (Occt.TopoDS_Edge)edgeExplorer.Current;
                 var edgeLoc = new Occt.TopLoc_Location();
                 var polygon = Occt.BRep_Tool.Polygon3D(edge, out edgeLoc);
-                if (polygon != null)
+                if (polygon == null)
+                {
+                    // Free edges (wireframe files, e.g. 2D drawing sheets) are not meshed
+                    // by BRepMesh, so sample the edge's curve directly.
+                    SampleFreeEdge(edge, positions, indices);
+                }
+                else
                 {
                     var edgeTrsf = edgeLoc.IsIdentity ? null : edgeLoc.Transformation;
                     int nbNodes = polygon.NbNodes;
@@ -125,6 +150,72 @@ namespace GMLModel
                     }
                 }
                 edgeExplorer.Next();
+            }
+        }
+
+        /// <summary>Appends a polyline approximation of an edge that has no mesh polygon.</summary>
+        private static void SampleFreeEdge(Occt.TopoDS_Edge edge, HT.Vector3Collection positions, HT.IntCollection indices)
+        {
+            try
+            {
+                if (!Occt.BRep_Tool.IsGeometric(edge)) return;
+                var curve = new Occt.BRepAdaptor_Curve(edge); // applies the edge location
+                double first = curve.FirstParameter, last = curve.LastParameter;
+                if (!double.IsFinite(first) || !double.IsFinite(last) || last <= first) return;
+
+                var parameters = new List<double>();
+                switch (curve.Type)
+                {
+                    case Occt.GeomAbs_CurveType.GeomAbs_Line:
+                        parameters.Add(first);
+                        parameters.Add(last);
+                        break;
+                    case Occt.GeomAbs_CurveType.GeomAbs_BSplineCurve when curve.Degree == 1:
+                    {
+                        // Polylines: sample exactly at the knots so corners are kept.
+                        var bspline = curve.BSpline;
+                        parameters.Add(first);
+                        for (int i = 1; i <= bspline.NbKnots; i++)
+                        {
+                            double k = bspline.Knot(i);
+                            if (k > first && k < last) parameters.Add(k);
+                        }
+                        parameters.Add(last);
+                        break;
+                    }
+                    case Occt.GeomAbs_CurveType.GeomAbs_Circle:
+                    case Occt.GeomAbs_CurveType.GeomAbs_Ellipse:
+                    {
+                        int n = Math.Clamp((int)Math.Ceiling((last - first) / (Math.PI / 32)), 4, 128);
+                        for (int i = 0; i <= n; i++) parameters.Add(first + (last - first) * i / n);
+                        break;
+                    }
+                    default:
+                    {
+                        int n = curve.Type == Occt.GeomAbs_CurveType.GeomAbs_BSplineCurve
+                            ? Math.Clamp(curve.NbKnots * 8, 16, 256)
+                            : 64;
+                        for (int i = 0; i <= n; i++) parameters.Add(first + (last - first) * i / n);
+                        break;
+                    }
+                }
+
+                int baseIdx = positions.Count;
+                foreach (var u in parameters)
+                {
+                    var p = curve.Value(u);
+                    positions.Add(new Vector3((float)p.X, (float)p.Y, (float)p.Z));
+                }
+                for (int i = 0; i < parameters.Count - 1; i++)
+                {
+                    indices.Add(baseIdx + i);
+                    indices.Add(baseIdx + i + 1);
+                }
+            }
+            catch (Exception ex)
+            {
+                // One bad edge must not abort the whole import.
+                Debug.WriteLine($"[STEP] free edge skipped: {ex.Message}");
             }
         }
 
